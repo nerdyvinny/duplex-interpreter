@@ -416,11 +416,23 @@ def save(cfg: AppConfig, path: str | Path = "config.yaml") -> Path:
     return path
 
 
+# The literal values in .env.example. Setup says "copy .env.example to .env",
+# so forgetting to edit it is the single most likely first-run mistake — and
+# an unedited placeholder is truthy, which would otherwise sail past the
+# emptiness check and fail much later as an opaque 401.
+_PLACEHOLDER_KEYS = {"sk-...", "your-key-here", "changeme", "..."}
+
+
 def require_env(name: str, provider: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
         raise ConfigError(
             f"{name} is not set, but the {provider!r} provider needs it. "
             f"Copy .env.example to .env and add your key."
+        )
+    if value in _PLACEHOLDER_KEYS:
+        raise ConfigError(
+            f"{name} is still the placeholder from .env.example. "
+            f"Edit .env and replace it with a real {provider} key."
         )
     return value

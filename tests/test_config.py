@@ -325,6 +325,27 @@ def test_a_missing_api_key_is_reported_as_config_advice(monkeypatch):
     assert provider.name == "openai"
 
 
+def test_an_unedited_placeholder_key_is_caught(monkeypatch):
+    """Setup says "copy .env.example to .env", so this is the likeliest slip.
+
+    A placeholder is truthy, so without an explicit check it sails past the
+    emptiness test and surfaces much later as an opaque 401.
+    """
+    from interpreter.config import require_env
+
+    for placeholder in ("sk-...", "your-key-here", "changeme"):
+        monkeypatch.setenv("OPENAI_API_KEY", placeholder)
+        with pytest.raises(ConfigError, match="still the placeholder"):
+            require_env("OPENAI_API_KEY", "openai")
+
+
+def test_a_real_looking_key_is_accepted(monkeypatch):
+    from interpreter.config import require_env
+
+    monkeypatch.setenv("OPENAI_API_KEY", "  sk-realkey123  ")
+    assert require_env("OPENAI_API_KEY", "openai") == "sk-realkey123"
+
+
 def test_preflight_catches_a_missing_key_before_devices_open(monkeypatch):
     """One clear failure at startup beats every utterance failing later."""
     from interpreter.config import ProvidersConfig

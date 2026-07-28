@@ -236,9 +236,25 @@ providers:
   local_whisper_device: auto # auto | cuda | cpu
 ```
 
-Piper needs a voice file per language. Download from
-<https://huggingface.co/rhasspy/piper-voices> and save as `models/piper/es.onnx`, or
-point at it with `PIPER_VOICE_ES=/path/to/voice.onnx`.
+Piper needs a voice per language, and **each voice is two files** — the `.onnx` and its
+`.onnx.json` config, which must sit next to it. Name them after the language code:
+
+```bash
+mkdir -p models/piper
+BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main
+curl -L -o models/piper/en.onnx      $BASE/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+curl -L -o models/piper/en.onnx.json $BASE/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+curl -L -o models/piper/es.onnx      $BASE/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx
+curl -L -o models/piper/es.onnx.json $BASE/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json
+```
+
+Browse the full voice list at <https://huggingface.co/rhasspy/piper-voices>. To keep a
+voice elsewhere, point at it with `PIPER_VOICE_ES=/path/to/voice.onnx` (its `.json` still
+has to be alongside it).
+
+The first run also downloads the Whisper model and an Argos model per direction
+(~100 MB each). That happens at startup, before the conversation begins — not
+mid-sentence.
 
 Expect 1–2 s end to end. Translation quality is a clear step down from the cloud models —
 Argos handles everyday sentences fine and struggles with idiom.
