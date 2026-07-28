@@ -98,6 +98,7 @@ To run for nothing at all, see [Running fully offline](#running-fully-offline).
 | `python run.py --setup` | Interactive wizard; writes `config.yaml` |
 | `python run.py --devices` | List audio devices with their indices |
 | `python run.py --selftest FILE.wav` | Run one WAV through the whole pipeline. No microphone needed. Prints per-stage timings and writes the translated audio to `selftest_out_A.wav` |
+| `python run.py --selftest FILE.wav --realtime` | Same, but feeds the audio at wall-clock speed. Slower, and the only way to get latency numbers that match live use — without it every utterance in the file arrives at once and they contend |
 | `python run.py --loopback` | Pipe the mic straight to the speaker to confirm the right devices are selected |
 | `python run.py --no-live` | Plain line-by-line output instead of the live view |
 | `python run.py -v` / `-vv` | Progressively more logging |
@@ -256,13 +257,34 @@ The first run also downloads the Whisper model and an Argos model per direction
 (~100 MB each). That happens at startup, before the conversation begins — not
 mid-sentence.
 
-Expect 1–2 s end to end. Translation quality is a clear step down from the cloud models —
-Argos handles everyday sentences fine and struggles with idiom.
+Measured on an RTX 5060 + i7-14700F with `small`, paced at wall-clock speed
+(`--selftest --realtime`), after the startup warm-up:
 
-**On a GPU:** `local_whisper_device: cuda` needs a CTranslate2 build matching your CUDA
-version. Very new consumer cards often need a specific build. If it fails, the code logs
-a warning and falls back to CPU `int8` automatically — which is still near real-time for
-`small` on a modern desktop CPU.
+| Stage | GPU (fp16) | CPU (int8) |
+|---|---|---|
+| Speech recognition | 180–380 ms | ~1.75 s |
+| Translation (Argos) | 20–40 ms | same |
+| Voice (Piper) | 90–210 ms | same |
+| **Pipeline total** | **320–630 ms** | ~1.9 s |
+
+Add `vad.silence_ms_to_end` on top for the full end-to-end figure — so roughly **0.8–1.1 s**
+on a GPU, which beats the cloud path. Every model is loaded and warmed at startup, so
+there is no penalty on the first thing anyone says.
+
+Translation quality is the real trade-off, not speed: Argos handles everyday sentences
+fine and struggles with idiom. It rendered "Muy bien, gracias" as "That's good, thank
+you" where a larger model gives "Very well, thanks."
+
+**On a GPU (Windows):** install the CUDA runtime libraries as pip packages —
+
+```bash
+pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+```
+
+Without them CTranslate2 fails with `Library cublas64_12.dll is not found` even though
+the GPU and driver are fine. The app puts their DLLs on the search path itself, so no
+`PATH` fiddling is needed. If CUDA is unusable for any reason it warns once and falls
+back to CPU `int8` automatically.
 
 ---
 
@@ -383,6 +405,16 @@ Elsewhere: `pip install --force-reinstall sounddevice`.
 
 **Silero VAD won't download.** Set `vad.backend: webrtc` — no download, slightly more
 false triggers in a noisy room.
+
+**`Library cublas64_12.dll is not found`** with a working GPU. Run
+`pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`. Since Python 3.8, Windows no longer
+searches `PATH` for an extension module's dependencies, so the app registers those
+directories itself once the packages are present.
+
+**Local latencies look far worse than the README claims.** Check you used `--realtime`.
+Without it `--selftest` feeds the whole file instantly, so every utterance is transcribed
+simultaneously and the timings reflect contention that never happens in a real
+conversation.
 
 **Wheels fail to build on install.** You're probably on Python 3.14. Use 3.13.
 

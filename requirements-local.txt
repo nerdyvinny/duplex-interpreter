@@ -13,3 +13,9 @@ argostranslate>=1.9       # per-pair models ~100 MB, CPU only
 
 # --- local TTS ---
 piper-tts>=1.2            # ONNX voices ~60 MB each, RTF ~0.05
+
+# --- local stack extras, see README "Running fully offline" ---
+# Windows GPU: CTranslate2 needs the CUDA math libraries; without these it
+# fails with "Library cublas64_12.dll is not found" on a perfectly good card.
+nvidia-cublas-cu12; platform_system == "Windows"
+nvidia-cudnn-cu12; platform_system == "Windows"

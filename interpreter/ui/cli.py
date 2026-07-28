@@ -44,6 +44,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="run one WAV file through the whole pipeline (no microphone needed)",
     )
     parser.add_argument(
+        "--realtime",
+        action="store_true",
+        help="with --selftest, feed the audio at wall-clock speed. Slower, but "
+        "the reported latencies then match live use instead of being inflated "
+        "by every utterance arriving at once.",
+    )
+    parser.add_argument(
         "--loopback",
         type=float,
         nargs="?",
@@ -69,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
 
         cfg = config_module.load(args.config)
         if args.selftest:
-            return asyncio.run(_cmd_selftest(cfg, Path(args.selftest)))
+            return asyncio.run(
+                _cmd_selftest(cfg, Path(args.selftest), realtime=args.realtime)
+            )
         if args.loopback is not None:
             return asyncio.run(_cmd_loopback(cfg, args.loopback))
         return asyncio.run(_cmd_run(cfg, live=not args.no_live))
@@ -369,7 +378,7 @@ def _ask_providers() -> config_module.ProvidersConfig:
 # --------------------------------------------------------------------------
 
 
-async def _cmd_selftest(cfg: AppConfig, wav_path: Path) -> int:
+async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = False) -> int:
     if not wav_path.exists():
         console.print(f"[red]No such file:[/red] {wav_path}")
         return 4
@@ -394,7 +403,17 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path) -> int:
         f"  tts         {providers.tts}"
         + (f" ({providers.tts_model})" if providers.tts == "openai" else "")
     )
-    console.print(f"  languages   {cfg.language_a.name} <-> {cfg.language_b.name}\n")
+    console.print(f"  languages   {cfg.language_a.name} <-> {cfg.language_b.name}")
+    console.print(
+        "  pacing      "
+        + (
+            "wall-clock (latencies match live use)"
+            if realtime
+            else "as fast as possible (latencies inflated by contention; "
+            "add --realtime for honest numbers)"
+        )
+        + "\n"
+    )
 
     bus = EventBus()
     speakers: dict[str, RecordingSpeaker] = {}
@@ -407,7 +426,7 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path) -> int:
     # The whole file goes into the first channel; a WAV has only one speaker.
     def make_microphone(channel: ChannelConfig):
         audio = pcm if channel.id == cfg.channels[0].id else np.zeros(0, dtype=np.int16)
-        return ArrayMicrophone(audio, channel_id=channel.id)
+        return ArrayMicrophone(audio, channel_id=channel.id, realtime=realtime)
 
     orchestrator = Orchestrator(
         cfg,

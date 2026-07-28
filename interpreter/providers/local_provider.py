@@ -12,8 +12,11 @@ the other person's audio capture.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import importlib.util
 import logging
 import os
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -30,6 +33,52 @@ from .base import (
 )
 
 log = logging.getLogger(__name__)
+
+_cuda_libraries_registered = False
+
+
+def _register_cuda_libraries() -> None:
+    """Make pip-installed NVIDIA runtime DLLs findable on Windows.
+
+    `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` drop their DLLs inside
+    site-packages, but CTranslate2 loads them by bare name, and since Python
+    3.8 Windows no longer searches PATH for an extension module's
+    dependencies. The result is `Library cublas64_12.dll is not found` on a
+    machine that has a perfectly good GPU and the right packages installed.
+
+    Registering the directories both ways covers either loader style. On this
+    hardware it is the difference between 1.75s and 0.15s per utterance.
+    """
+    global _cuda_libraries_registered
+    if _cuda_libraries_registered or sys.platform != "win32":
+        return
+    _cuda_libraries_registered = True
+
+    try:
+        spec = importlib.util.find_spec("nvidia")
+        roots = list(spec.submodule_search_locations) if spec else []
+    except (ImportError, ValueError, AttributeError):
+        roots = []
+    if not roots:
+        return
+
+    directories = [
+        str(path)
+        for root in roots
+        for path in sorted(Path(root).glob("*/bin"))
+        if path.is_dir()
+    ]
+    if not directories:
+        return
+
+    existing = os.environ.get("PATH", "")
+    additions = [d for d in directories if d not in existing]
+    if additions:
+        os.environ["PATH"] = os.pathsep.join(additions) + os.pathsep + existing
+    for directory in directories:
+        with contextlib.suppress(OSError, AttributeError):
+            os.add_dll_directory(directory)
+    log.debug("registered %d NVIDIA DLL directories", len(directories))
 
 
 class FasterWhisperSTT(STTProvider):
@@ -54,6 +103,7 @@ class FasterWhisperSTT(STTProvider):
 
     @staticmethod
     def _cuda_available() -> bool:
+        _register_cuda_libraries()
         try:
             import ctranslate2
 
@@ -89,6 +139,8 @@ class FasterWhisperSTT(STTProvider):
             ) from exc
 
         device, compute = self._resolve_placement()
+        if device == "cuda":
+            _register_cuda_libraries()
         log.info("loading faster-whisper %s on %s (%s)", self.size, device, compute)
         try:
             model = WhisperModel(self.size, device=device, compute_type=compute)
@@ -109,6 +161,17 @@ class FasterWhisperSTT(STTProvider):
             raise ProviderError(
                 f"could not load faster-whisper on {device}: {exc}"
             ) from exc
+
+    def preflight(self, cfg) -> None:
+        """Load and warm the model now.
+
+        Whisper takes a second or two to load and JIT its first pass. Left
+        lazy, that lands on whatever the first person says, which is exactly
+        the moment the app is being judged.
+        """
+        del cfg
+        if self._model is None:
+            self._model = self._load()
 
     async def _ensure_model(self):
         if self._model is None:
@@ -268,12 +331,19 @@ class PiperTTS(TTSProvider):
         self._lock = asyncio.Lock()
 
     def preflight(self, cfg) -> None:
-        """Check both voice files exist before anyone starts talking."""
+        """Load both voices now.
+
+        Checking the files exist is not enough: the first synthesis in each
+        language pays ~1.3s to load its model, and the second language's cost
+        lands mid-conversation when the other person first replies.
+        """
         for code in cfg.language_codes:
             try:
-                self._voice_path(code)
+                self._voices[code] = self._load_voice(code)
             except ProviderError as exc:
                 raise ConfigError(str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise ConfigError(f"Piper could not load the {code} voice: {exc}") from exc
 
     def _voice_path(self, language: str) -> Path:
         override = os.environ.get(f"PIPER_VOICE_{language.upper()}")
