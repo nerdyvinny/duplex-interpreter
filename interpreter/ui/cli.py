@@ -57,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     args = build_parser().parse_args(argv)
     _configure_logging(args.verbose)
 
@@ -83,6 +84,55 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
+def _force_utf8_output() -> None:
+    """Make the console handle accented text.
+
+    A translation app prints Spanish, Greek and Japanese by definition, and
+    the legacy Windows console codepage mangles all of it into question
+    marks. Harmless everywhere else.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass  # already redirected, or not a real stream
+
+
+# Third-party loggers that would otherwise bury the conversation. Argos logs
+# every tokenized sentence at INFO; stanza warns about model packaging on
+# every call.
+_NOISY_LOGGERS = (
+    "httpx",
+    "httpcore",
+    "openai",
+    "urllib3",
+    "argostranslate",
+    "stanza",
+    "huggingface_hub",
+    "faster_whisper",
+    "numba",
+)
+
+
+class _QuietThirdParty(logging.Filter):
+    """Silence noisy libraries at the handler.
+
+    Setting levels per logger is not enough: argostranslate calls
+    `setLevel(INFO)` on its own logger when it is imported, which is after
+    our configuration runs, and a logger's own level beats its parent's.
+    Filtering at the handler catches the records whatever the library does.
+    """
+
+    def __init__(self, threshold: int) -> None:
+        super().__init__()
+        self.threshold = threshold
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name.startswith(_NOISY_LOGGERS):
+            return record.levelno >= self.threshold
+        return True
+
+
 def _configure_logging(verbosity: int) -> None:
     level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
     logging.basicConfig(
@@ -91,9 +141,11 @@ def _configure_logging(verbosity: int) -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
-    # These are chatty at DEBUG and drown out our own logs.
-    for noisy in ("httpx", "httpcore", "openai", "urllib3"):
-        logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
+    # -vv means the user genuinely wants the library internals.
+    if verbosity < 2:
+        third_party = logging.ERROR if verbosity == 0 else logging.WARNING
+        for handler in logging.getLogger().handlers:
+            handler.addFilter(_QuietThirdParty(third_party))
 
 
 # --------------------------------------------------------------------------

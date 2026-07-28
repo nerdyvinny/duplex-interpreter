@@ -59,7 +59,8 @@ class OpenAISTT(STTProvider):
         # to get the audio-detected language back from the API.
         self._supports_verbose = model.startswith("whisper")
 
-    def preflight(self) -> None:
+    def preflight(self, cfg) -> None:
+        del cfg
         _client()
 
     async def transcribe(
@@ -120,7 +121,8 @@ class OpenAITranslation(TranslationProvider):
     def __init__(self, model: str = "gpt-4o-mini") -> None:
         self.model = model
 
-    def preflight(self) -> None:
+    def preflight(self, cfg) -> None:
+        del cfg
         _client()
 
     async def translate(
@@ -179,7 +181,8 @@ class OpenAITTS(TTSProvider):
     def __init__(self, model: str = "gpt-4o-mini-tts") -> None:
         self.model = model
 
-    def preflight(self) -> None:
+    def preflight(self, cfg) -> None:
+        del cfg
         _client()
 
     async def synthesize(self, text: str, *, language: str, voice: str) -> SpeechAudio:

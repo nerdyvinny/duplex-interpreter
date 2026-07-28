@@ -165,6 +165,32 @@ class ArgosTranslation(TranslationProvider):
         self._installed: set[tuple[str, str]] = set()
         self._install_lock = asyncio.Lock()
 
+    def preflight(self, cfg) -> None:
+        """Install both directions now.
+
+        Argos downloads ~100 MB per direction on first use. Left lazy, that
+        download would happen in the middle of the first sentence somebody
+        says; here it is a one-off wait before the conversation starts.
+        """
+        import argostranslate.translate
+
+        first, second = cfg.language_codes
+        for source, target in ((first, second), (second, first)):
+            try:
+                self._ensure_pair(source, target)
+                # Force the one-time stanza resource extraction now, serially.
+                # Left to the first real translation, two concurrent calls
+                # race to rename the same temp directory and one of them
+                # dies with a permission error.
+                argostranslate.translate.translate("Hello.", source, target)
+            except ProviderError as exc:
+                raise ConfigError(str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise ConfigError(
+                    f"Argos could not prepare {source}->{target}: {exc}"
+                ) from exc
+            self._installed.add((source, target))
+
     def _ensure_pair(self, source: str, target: str) -> None:
         import argostranslate.package
         import argostranslate.translate
@@ -240,6 +266,14 @@ class PiperTTS(TTSProvider):
             ) from exc
         self._voices: dict[str, object] = {}
         self._lock = asyncio.Lock()
+
+    def preflight(self, cfg) -> None:
+        """Check both voice files exist before anyone starts talking."""
+        for code in cfg.language_codes:
+            try:
+                self._voice_path(code)
+            except ProviderError as exc:
+                raise ConfigError(str(exc)) from exc
 
     def _voice_path(self, language: str) -> Path:
         override = os.environ.get(f"PIPER_VOICE_{language.upper()}")

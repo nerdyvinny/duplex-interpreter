@@ -32,6 +32,11 @@ from .routing import LanguageRouter
 
 log = logging.getLogger(__name__)
 
+# How long to let in-flight translations finish after capture stops. Generous
+# because a local model on CPU can take several seconds per utterance, and
+# cutting off the last thing somebody said is worse than waiting.
+DRAIN_TIMEOUT_S = 60.0
+
 MicrophoneFactory = Callable[[ChannelConfig], object]
 SpeakerFactory = Callable[[ChannelConfig], object]
 VadFactory = Callable[[ChannelConfig], VadBackend]
@@ -94,10 +99,12 @@ class Orchestrator:
         if self.channels:
             return
 
-        # Before any audio device is opened: one clear message about a missing
-        # key beats every utterance failing once the conversation is running.
+        # Before any audio device is opened. Credentials get checked and local
+        # models get fetched here, so a missing key is one clear message at
+        # startup and a model download is a wait before the conversation
+        # rather than a stall in the middle of the first sentence.
         for provider in (self.stt, self.translation, self.tts):
-            provider.preflight()
+            provider.preflight(self.cfg)
 
         shared_room = self.cfg.mode is Mode.SINGLE_MIC
 
@@ -240,9 +247,16 @@ class Orchestrator:
             for channel in self.channels:
                 if channel.pipeline is not None:
                     try:
-                        await asyncio.wait_for(channel.pipeline.drain(), timeout=15.0)
+                        await asyncio.wait_for(
+                            channel.pipeline.drain(), timeout=DRAIN_TIMEOUT_S
+                        )
                     except (TimeoutError, asyncio.TimeoutError):
-                        log.warning("channel %s did not drain in time", channel.config.id)
+                        log.warning(
+                            "channel %s still had work in flight after %.0fs; "
+                            "the last utterance may be incomplete",
+                            channel.config.id,
+                            DRAIN_TIMEOUT_S,
+                        )
 
         for channel in self.channels:
             try:

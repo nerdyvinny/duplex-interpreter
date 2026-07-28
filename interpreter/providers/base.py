@@ -51,12 +51,16 @@ class Provider(ABC):
 
     name: str = "provider"
 
-    def preflight(self) -> None:
-        """Check credentials and settings before any audio device is opened.
+    def preflight(self, cfg) -> None:
+        """Validate credentials and fetch models before the conversation starts.
 
-        Must raise `ConfigError` for anything the user has to fix. Failing
-        here means one clear message at startup instead of every utterance
-        failing mid-conversation.
+        Runs before any audio device is opened, and is given the `AppConfig`
+        so a provider can prepare exactly the language pair in play. Raise
+        `ConfigError` for anything the user has to fix.
+
+        Doing the work here matters as much as the checking: a provider that
+        downloads its model lazily would otherwise stall in the middle of the
+        first sentence somebody says.
         """
 
     async def aclose(self) -> None:
