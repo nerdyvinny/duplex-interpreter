@@ -215,6 +215,34 @@ async def test_empty_transcript_is_dropped(single_mic_config):
     assert "no speech" in dropped[0].detail
 
 
+async def test_a_hallucinated_third_language_is_dropped(single_mic_config):
+    """From a live session: room noise came back from Whisper as Cyrillic.
+
+    It must be dropped, not routed by alternation into a "translation" of
+    noise into itself.
+    """
+    harness = Harness(
+        single_mic_config,
+        audio={"A": two_utterances()},
+        stt=FakeSTT(
+            [Transcript(text="Диана"), Transcript(text="where is the station")]
+        ),
+    )
+    await harness.run()
+
+    dropped = harness.events(Stage.DROPPED)
+    assert len(dropped) == 1
+    assert "neither" in dropped[0].detail
+
+    # The real utterance behind it still goes through.
+    done = harness.events(Stage.DONE)
+    assert len(done) == 1
+    assert done[0].source_text == "where is the station"
+    assert harness.tts.calls == [
+        {"text": "[en->es] where is the station", "language": "es", "voice": "nova"}
+    ]
+
+
 async def test_self_echo_is_dropped(single_mic_config):
     """The microphone hearing our own translation must not start a loop."""
     harness = Harness(

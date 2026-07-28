@@ -40,6 +40,10 @@ class RoutingDecision:
     target: str
     confidence: float
     reason: str
+    # When set, the caller should drop the utterance instead of translating
+    # it. Reserved for cases where the evidence says this is not either
+    # configured language at all, rather than merely being ambiguous.
+    reject: bool = False
 
 
 class LanguageRouter:
@@ -76,6 +80,19 @@ class LanguageRouter:
         audio_lang = transcript.language if transcript.language in self.candidates else None
         audio_confidence = transcript.language_confidence
 
+        rejection = self._rejection_reason(transcript, text_guess, audio_lang)
+        if rejection is not None:
+            # Leave `_last_source` alone: a hallucination is not a turn, and
+            # letting it flip the alternation state would misroute the next
+            # real utterance too.
+            return RoutingDecision(
+                source=self.candidates[0],
+                target=self.candidates[1],
+                confidence=0.0,
+                reason=rejection,
+                reject=True,
+            )
+
         source, confidence, reason = self._combine(text_guess, audio_lang, audio_confidence)
 
         self._last_source = source
@@ -85,6 +102,36 @@ class LanguageRouter:
             confidence=confidence,
             reason=reason,
         )
+
+    def _rejection_reason(
+        self,
+        transcript: Transcript,
+        text_guess: langid.LangGuess,
+        audio_lang: str | None,
+    ) -> str | None:
+        """Should this be dropped rather than routed?
+
+        Only for evidence that the utterance is not in either configured
+        language — not for mere ambiguity, which alternation handles. In live
+        testing the recognizer turned room noise into Cyrillic, and routing
+        it by alternation meant "translating" noise into itself.
+        """
+        if text_guess.foreign:
+            return f"not {self.candidates[0]} or {self.candidates[1]}: {text_guess.reason}"
+
+        # The recognizer named a language outside the pair and the text gives
+        # us nothing to overrule it with. Two weak signals both pointing away
+        # from the conversation beat a coin flip.
+        reported = transcript.language
+        if (
+            reported
+            and audio_lang is None
+            and text_guess.language is None
+            and reported not in self.candidates
+        ):
+            return f"recognized as {reported!r}, which is neither configured language"
+
+        return None
 
     def _combine(
         self,

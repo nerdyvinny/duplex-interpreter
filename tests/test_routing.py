@@ -189,3 +189,74 @@ def test_out_of_pair_audio_detection_is_ignored():
 def test_identical_candidates_are_rejected():
     with pytest.raises(ValueError):
         LanguageRouter(("en", "en"))
+
+
+# --------------------------------------------------------------------------
+# rejecting hallucinations
+#
+# All of these come from a real live session: the VAD opened on room noise
+# and Whisper turned it into words.
+# --------------------------------------------------------------------------
+
+
+def test_text_in_a_third_script_is_flagged_foreign():
+    guess = langid.identify("Диана", ("en", "es"))
+
+    assert guess.foreign is True
+    assert guess.language is None
+
+
+def test_a_third_script_is_dropped_rather_than_guessed():
+    """The exact failure from live testing: noise came back as Cyrillic."""
+    router = LanguageRouter(("en", "es"))
+    decision = router.route(Transcript(text="Диана"))
+
+    assert decision.reject is True
+    assert "neither" in decision.reason or "not en or es" in decision.reason
+
+
+def test_a_rejection_does_not_disturb_the_alternation_state():
+    """A hallucination is not a turn, so it must not flip whose go it is."""
+    router = LanguageRouter(("en", "es"))
+
+    router.route(Transcript(text="I would like the menu please"))  # en
+    assert router.route(Transcript(text="Диана")).reject is True
+
+    # Next unclear utterance should still alternate off the English turn.
+    following = router.route(Transcript(text="mmhm"))
+    assert following.reject is False
+    assert following.source == "es"
+
+
+def test_an_out_of_pair_recognizer_language_with_no_text_signal_is_dropped():
+    router = LanguageRouter(("en", "es"))
+    decision = router.route(Transcript(text="mm", language="cy"))
+
+    assert decision.reject is True
+    assert "cy" in decision.reason
+
+
+def test_an_out_of_pair_language_is_kept_when_the_text_is_clear():
+    """Whisper mislabels constantly; a readable transcript overrules it."""
+    router = LanguageRouter(("en", "es"))
+    decision = router.route(Transcript(text="donde esta la estacion", language="pt"))
+
+    assert decision.reject is False
+    assert decision.source == "es"
+
+
+def test_ordinary_ambiguous_speech_is_still_routed_not_dropped():
+    """Rejection is for foreign text, not for merely unclear text."""
+    router = LanguageRouter(("en", "es"))
+
+    for text in ("no", "ok", "mmhm", "yeah"):
+        decision = router.route(Transcript(text=text))
+        assert decision.reject is False, f"{text!r} should route, not drop"
+
+
+def test_a_matching_third_script_is_not_foreign():
+    """Cyrillic is only foreign if neither speaker uses it."""
+    guess = langid.identify("привет как дела", ("en", "ru"))
+
+    assert guess.foreign is False
+    assert guess.language == "ru"

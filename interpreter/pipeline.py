@@ -171,6 +171,10 @@ class ChannelPipeline:
                     return
 
                 decision = self.router.route(transcript)
+                if decision.reject:
+                    self._drop(seq, timings, decision.reason)
+                    return
+
                 self.bus.emit(
                     PipelineEvent(
                         seq=seq,

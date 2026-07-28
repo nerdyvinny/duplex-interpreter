@@ -142,6 +142,11 @@ class LangGuess:
     language: str | None
     confidence: float  # 0..1
     reason: str
+    # True when the text is definitively in *neither* candidate language —
+    # as opposed to `language is None`, which only means "can't tell". The
+    # caller should drop these rather than fall back to guessing: they are
+    # almost always the recognizer hallucinating on noise.
+    foreign: bool = False
 
 
 def _strip_accents(text: str) -> str:
@@ -187,6 +192,18 @@ def identify(text: str, candidates: tuple[str, ...]) -> LangGuess:
                 return LangGuess(first, 0.98, f"{dominant} script")
             if dominant in second_scripts and dominant not in first_scripts:
                 return LangGuess(second, 0.98, f"{dominant} script")
+
+        # Written in an alphabet neither speaker uses. Whisper does this when
+        # it hallucinates on background noise — a room hum came back as
+        # Cyrillic in live testing. Guessing a direction for this is worse
+        # than admitting it is not speech we were asked to handle.
+        if share >= 0.6 and dominant not in first_scripts | second_scripts:
+            return LangGuess(
+                None,
+                0.0,
+                f"{dominant} script is neither {first} nor {second}",
+                foreign=True,
+            )
 
     # --- stage 2: stopwords + marker characters ---
     words = [w.lower() for w in _WORD_RE.findall(stripped)]
