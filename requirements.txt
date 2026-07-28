@@ -1,0 +1,26 @@
+# duplex-interpreter — cloud path (default)
+# Python 3.13 recommended. See README for why not 3.14.
+
+# --- audio I/O ---
+sounddevice>=0.5.0        # PortAudio bindings: per-device input/output streams
+numpy>=1.26
+
+# --- voice activity detection ---
+onnxruntime>=1.17         # runs the 2.2 MB Silero VAD model (avoids torch)
+webrtcvad-wheels>=2.0.14  # zero-download fallback VAD backend
+
+# --- resampling (TTS 24k/22.05k -> device rate) ---
+soxr>=0.5.0
+
+# --- cloud providers ---
+openai>=1.68              # STT + translation + TTS with one key
+httpx>=0.27
+
+# --- config / CLI ---
+PyYAML>=6.0
+python-dotenv>=1.0
+rich>=13.7
+
+# --- optional cloud upgrades (uncomment to use) ---
+# deepl>=1.18             # better MT for European pairs, free 500k chars/month
+# elevenlabs>=1.0         # eleven_flash_v2_5, ~75ms model latency

@@ -1,0 +1,23 @@
+# secrets
+.env
+
+# local user config (config.example.yaml is the tracked template)
+config.yaml
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# downloaded models / caches
+models/
+*.onnx
+
+# audio scratch
+*.wav
+!samples/*.wav
+selftest_out*.wav

@@ -1,0 +1,68 @@
+# duplex-interpreter configuration
+# Copy to config.yaml (or run `python run.py --setup` to generate one).
+# Device names are matched case-insensitively as substrings, so
+# "FHD Camera" matches "Microphone (FHD Camera Microphone)".
+# Run `python run.py --devices` to see what's available.
+
+# single_mic: one shared microphone. Hands-free, language detected per
+#             utterance. Works with the hardware you already have.
+# dual_mic:   one microphone + one earpiece per person. True full duplex —
+#             both people can talk at once and neither pipeline blocks.
+mode: single_mic
+
+languages:
+  a:
+    code: en
+    name: English
+    voice: alloy
+  b:
+    code: es
+    name: Spanish
+    voice: nova
+
+channels:
+  # single_mic: exactly one channel, language must be 'auto'.
+  - id: A
+    input_device: null # null = system default; or "FHD Camera", or an index
+    output_device: null
+    language: auto
+    input_gain: 1.0
+
+  # dual_mic: two channels, each pinning a language. Example:
+  # - id: A
+  #   input_device: "Headset A"
+  #   output_device: "Headset A"
+  #   language: en
+  # - id: B
+  #   input_device: "Headset B"
+  #   output_device: "Headset B"
+  #   language: es
+
+providers:
+  stt: openai # openai | faster-whisper
+  translation: openai # openai | deepl | argos
+  tts: openai # openai | elevenlabs | piper
+  stt_model: gpt-4o-mini-transcribe
+  translation_model: gpt-4o-mini
+  tts_model: gpt-4o-mini-tts
+  # Local-only knobs (ignored by the cloud providers):
+  # local_whisper_size: small
+  # local_whisper_device: auto     # auto | cuda | cpu
+  # local_whisper_compute: auto    # auto | float16 | int8
+
+vad:
+  backend: silero # silero (accurate, 2.2 MB download) | webrtc (zero download)
+  # THE latency lever. 600 is safe; 350 feels much snappier but starts
+  # cutting off people who pause mid-sentence. See README "Tuning latency".
+  silence_ms_to_end: 600
+  preroll_ms: 300 # audio kept from before the trigger, so onsets aren't clipped
+  min_utterance_ms: 250 # ignore coughs and clicks
+  max_utterance_ms: 15000 # force-flush long monologues
+  threshold: 0.5
+
+duplex:
+  # Echo control for when the mic can hear the speaker. Ignored in dual_mic.
+  shared_audio: true
+  bargein: true # talk over the translation to interrupt it
+
+log_level: WARNING

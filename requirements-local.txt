@@ -1,0 +1,15 @@
+# duplex-interpreter — fully local / offline extras
+# Install on top of requirements.txt:
+#   pip install -r requirements.txt -r requirements-local.txt
+#
+# These pull multi-GB models on first run. See README "Running fully offline".
+
+# --- local STT ---
+faster-whisper>=1.1.0     # CTranslate2 Whisper. GPU needs a CUDA-matched ctranslate2;
+                          # CPU int8 with model_size=small is still near real-time.
+
+# --- local MT ---
+argostranslate>=1.9       # per-pair models ~100 MB, CPU only
+
+# --- local TTS ---
+piper-tts>=1.2            # ONNX voices ~60 MB each, RTF ~0.05
