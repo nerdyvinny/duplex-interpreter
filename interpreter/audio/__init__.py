@@ -1,1 +1,1 @@
-"""Audio capture, voice activity detection, resampling and playback."""
+# mic, speaker, vad and resampling all live in here

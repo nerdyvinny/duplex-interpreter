@@ -1,10 +1,7 @@
-"""Language identification and routing.
-
-Single-mic mode lives or dies on this: if the app guesses wrong about who
-spoke, it translates into the language the speaker was already using.
-"""
-
-from __future__ import annotations
+# tests for working out who spoke and which way to translate
+#
+# single_mic mode completely depends on this. get it wrong and it
+# "translates" spanish into spanish, which looks really broken
 
 import pytest
 
@@ -13,9 +10,7 @@ from interpreter.providers.base import Transcript
 from interpreter.routing import LanguageRouter
 
 
-# --------------------------------------------------------------------------
-# text language ID
-# --------------------------------------------------------------------------
+# ---- text language id ----
 
 
 @pytest.mark.parametrize(
@@ -58,7 +53,7 @@ def test_different_scripts_are_decided_on_sight(text, candidates, expected):
 
 
 def test_ambiguous_short_words_report_low_confidence():
-    """"no" is a real word in both. The router must be told it's a guess."""
+    # "no" is a real word in both languages so this has to be a low guess
     guess = langid.identify("no", ("en", "es"))
     assert guess.confidence < 0.45
 
@@ -90,9 +85,7 @@ def test_stt_language_names_normalize_to_codes(raw, expected):
     assert langid.normalize_language_name(raw) == expected
 
 
-# --------------------------------------------------------------------------
-# routing
-# --------------------------------------------------------------------------
+# ---- routing ----
 
 
 def test_pinned_channel_never_guesses():
@@ -124,7 +117,7 @@ def test_agreeing_signals_raise_confidence():
 
 
 def test_text_wins_when_it_disagrees_with_audio():
-    """Whisper mislabels short clips constantly; the transcript is better."""
+    # whisper gets short clips wrong all the time, trust the text instead
     router = LanguageRouter(("en", "es"))
     decision = router.route(
         Transcript(
@@ -177,7 +170,7 @@ def test_source_and_target_are_always_different():
 
 
 def test_out_of_pair_audio_detection_is_ignored():
-    """Whisper sometimes returns a third language; it isn't an option here."""
+    # whisper sometimes names a totally different language
     router = LanguageRouter(("en", "es"))
     decision = router.route(
         Transcript(text="hola buenos dias", language="pt", language_confidence=0.9)
@@ -207,7 +200,7 @@ def test_text_in_a_third_script_is_flagged_foreign():
 
 
 def test_a_third_script_is_dropped_rather_than_guessed():
-    """The exact failure from live testing: noise came back as Cyrillic."""
+    # the actual thing that happened to me, my fan noise came back russian
     router = LanguageRouter(("en", "es"))
     decision = router.route(Transcript(text="Диана"))
 
@@ -216,7 +209,7 @@ def test_a_third_script_is_dropped_rather_than_guessed():
 
 
 def test_a_rejection_does_not_disturb_the_alternation_state():
-    """A hallucination is not a turn, so it must not flip whose go it is."""
+    # garbage is not somebody taking a turn, dont flip whose go it is
     router = LanguageRouter(("en", "es"))
 
     router.route(Transcript(text="I would like the menu please"))  # en
@@ -237,7 +230,7 @@ def test_an_out_of_pair_recognizer_language_with_no_text_signal_is_dropped():
 
 
 def test_an_out_of_pair_language_is_kept_when_the_text_is_clear():
-    """Whisper mislabels constantly; a readable transcript overrules it."""
+    # readable text beats whisper guessing at the audio
     router = LanguageRouter(("en", "es"))
     decision = router.route(Transcript(text="donde esta la estacion", language="pt"))
 
@@ -246,7 +239,7 @@ def test_an_out_of_pair_language_is_kept_when_the_text_is_clear():
 
 
 def test_ordinary_ambiguous_speech_is_still_routed_not_dropped():
-    """Rejection is for foreign text, not for merely unclear text."""
+    # only throw out foreign text, not text I merely cant work out
     router = LanguageRouter(("en", "es"))
 
     for text in ("no", "ok", "mmhm", "yeah"):
@@ -255,7 +248,7 @@ def test_ordinary_ambiguous_speech_is_still_routed_not_dropped():
 
 
 def test_a_matching_third_script_is_not_foreign():
-    """Cyrillic is only foreign if neither speaker uses it."""
+    # cyrillic is only "foreign" if neither person actually speaks it
     guess = langid.identify("привет как дела", ("en", "ru"))
 
     assert guess.foreign is False

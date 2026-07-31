@@ -1,31 +1,29 @@
-"""Configuration: dataclasses, YAML loading, .env keys, and validation.
-
-Validation errors are raised as `ConfigError` with a message aimed at the
-person editing config.yaml, not at a stack trace reader.
-"""
-
-from __future__ import annotations
+# reads config.yaml and the .env file, and yells at you if something is wrong
+#
+# I tried to make the error messages actually say what to fix instead of
+# just dumping a traceback, because I kept confusing myself with my own
+# config file
 
 import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 import yaml
 from dotenv import load_dotenv
 
 from . import languages
 
-# Everything upstream of TTS runs at 16 kHz mono int16: it is what Silero VAD
-# and every Whisper variant expect, and it keeps upload sizes small.
+# everything before the TTS runs at 16khz mono 16 bit. thats what silero
+# and whisper both want, and it keeps the uploads small
 PIPELINE_SAMPLE_RATE = 16_000
 FRAME_MS = 20
-FRAME_SAMPLES = PIPELINE_SAMPLE_RATE * FRAME_MS // 1000  # 320
+FRAME_SAMPLES = PIPELINE_SAMPLE_RATE * FRAME_MS // 1000  # = 320
 
 
 class ConfigError(ValueError):
-    """Raised for a config a human needs to fix."""
+    # something in the config a person has to go fix
+    pass
 
 
 class Mode(str, Enum):
@@ -40,57 +38,76 @@ class LanguageSlot:
     voice: str
 
     @classmethod
-    def parse(cls, raw: Any, slot: str, taken_voices: set[str]) -> LanguageSlot:
+    def parse(cls, raw, slot, taken_voices):
+        # you can write either "es" or a whole block with a voice in it
         if isinstance(raw, str):
             raw = {"code": raw}
         if not isinstance(raw, dict):
             raise ConfigError(
-                f"languages.{slot} must be a language code or a mapping, got {type(raw).__name__}"
+                f"languages.{slot} must be a language code or a mapping, "
+                f"got {type(raw).__name__}"
             )
+
         code = raw.get("code")
         if not code:
             raise ConfigError(f"languages.{slot}.code is required (e.g. 'en')")
+
+        # "en-US" -> "en"
         code = str(code).strip().lower().split("-")[0]
         if not languages.is_known(code):
             raise ConfigError(
                 f"languages.{slot}.code={code!r} is not in the language table. "
                 f"Add it to interpreter/languages.py or pick a known code."
             )
-        voice = str(raw.get("voice") or languages.default_voice(code, taken_voices))
-        return cls(code=code, name=str(raw.get("name") or languages.name_of(code)), voice=voice)
+
+        voice = raw.get("voice")
+        if not voice:
+            voice = languages.default_voice(code, taken_voices)
+
+        name = raw.get("name")
+        if not name:
+            name = languages.name_of(code)
+
+        return cls(code=code, name=str(name), voice=str(voice))
 
 
 @dataclass
 class ChannelConfig:
-    """One microphone plus the speaker its *translations* come out of.
-
-    In dual_mic mode the two channels are cross-wired by the orchestrator:
-    what channel A hears is translated and played on channel B's output.
-    """
-
+    # one microphone, plus the speaker its translations come out of.
+    # in dual_mic these get crossed over in orchestrator.py
     id: str
-    input_device: str | int | None = None
-    output_device: str | int | None = None
-    language: str = "auto"  # "auto" = detect per utterance
+    input_device: object = None
+    output_device: object = None
+    language: str = "auto"   # "auto" means detect it every sentence
     input_gain: float = 1.0
 
     @classmethod
-    def parse(cls, raw: Any, index: int) -> ChannelConfig:
+    def parse(cls, raw, index):
         if not isinstance(raw, dict):
             raise ConfigError(f"channels[{index}] must be a mapping")
-        channel_id = str(raw.get("id") or chr(ord("A") + index))
+
+        # if they didn't name it, call it A, B, C...
+        channel_id = raw.get("id")
+        if not channel_id:
+            channel_id = chr(ord("A") + index)
+
         language = str(raw.get("language", "auto")).strip().lower()
         if language != "auto":
             language = language.split("-")[0]
             if not languages.is_known(language):
                 raise ConfigError(
-                    f"channels[{index}].language={language!r} is unknown; use 'auto' or a known code"
+                    f"channels[{index}].language={language!r} is unknown; "
+                    f"use 'auto' or a known code"
                 )
+
         gain = float(raw.get("input_gain", 1.0))
         if not 0.1 <= gain <= 10.0:
-            raise ConfigError(f"channels[{index}].input_gain must be between 0.1 and 10.0")
+            raise ConfigError(
+                f"channels[{index}].input_gain must be between 0.1 and 10.0"
+            )
+
         return cls(
-            id=channel_id,
+            id=str(channel_id),
             input_device=raw.get("input_device"),
             output_device=raw.get("output_device"),
             language=language,
@@ -108,84 +125,105 @@ class ProvidersConfig:
     translation_model: str = "gpt-4o-mini"
     tts_model: str = "gpt-4o-mini-tts"
 
-    # Local-path knobs, ignored by the cloud providers.
+    # only used by the local stuff, the cloud providers ignore these
     local_whisper_size: str = "small"
-    local_whisper_device: str = "auto"  # auto | cuda | cpu
+    local_whisper_device: str = "auto"   # auto | cuda | cpu
     local_whisper_compute: str = "auto"  # auto | float16 | int8
 
-    # How many previous turns to hand the translator for pronoun/gender context.
+    # how many old lines to give the translator so it can figure out
+    # pronouns and he/she stuff
     context_turns: int = 3
 
     @classmethod
-    def parse(cls, raw: Any) -> ProvidersConfig:
+    def parse(cls, raw):
         raw = raw or {}
         if not isinstance(raw, dict):
             raise ConfigError("providers must be a mapping")
-        known = {f for f in cls.__dataclass_fields__}
+
+        # catch typos instead of silently ignoring the key
+        known = set(cls.__dataclass_fields__)
         unknown = set(raw) - known
         if unknown:
-            raise ConfigError(f"unknown providers keys: {', '.join(sorted(unknown))}")
+            raise ConfigError(
+                f"unknown providers keys: {', '.join(sorted(unknown))}"
+            )
+
         return cls(**{k: raw[k] for k in raw})
 
 
 @dataclass
 class VadConfig:
     backend: str = "silero"  # silero | webrtc
-    # The single biggest latency lever. Lower = snappier but clips people who
-    # pause mid-sentence. See README "Tuning latency".
+
+    # THIS is the setting that decides how fast the app feels. its how much
+    # silence has to happen before I decide the sentence is over. lower =
+    # snappier but it cuts off people who pause to think
     silence_ms_to_end: int = 600
-    preroll_ms: int = 300  # audio kept from *before* the trigger, so no clipped onsets
-    min_utterance_ms: int = 250  # drop coughs and clicks
-    max_utterance_ms: int = 15_000  # force-flush monologues
-    start_frames: int = 3  # consecutive voiced frames needed to open a segment
-    threshold: float = 0.5  # silero speech probability
-    aggressiveness: int = 2  # webrtc only, 0-3
+
+    preroll_ms: int = 300       # audio kept from BEFORE the trigger so the
+                                # first word isn't chopped off
+    min_utterance_ms: int = 250  # ignore coughs and clicks
+    max_utterance_ms: int = 15_000  # split up people who never stop talking
+    start_frames: int = 3       # voiced frames in a row before I believe it
+    threshold: float = 0.5      # silero speech probability
+    aggressiveness: int = 2     # webrtc only, 0 to 3
 
     @classmethod
-    def parse(cls, raw: Any) -> VadConfig:
+    def parse(cls, raw):
         raw = raw or {}
         if not isinstance(raw, dict):
             raise ConfigError("vad must be a mapping")
+
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ConfigError(f"unknown vad keys: {', '.join(sorted(unknown))}")
+
         cfg = cls(**{k: raw[k] for k in raw})
+
         if cfg.backend not in {"silero", "webrtc"}:
-            raise ConfigError(f"vad.backend must be 'silero' or 'webrtc', got {cfg.backend!r}")
+            raise ConfigError(
+                f"vad.backend must be 'silero' or 'webrtc', got {cfg.backend!r}"
+            )
         if not 0.0 < cfg.threshold < 1.0:
             raise ConfigError("vad.threshold must be between 0 and 1")
         if not 0 <= cfg.aggressiveness <= 3:
             raise ConfigError("vad.aggressiveness must be 0-3")
         if cfg.min_utterance_ms >= cfg.max_utterance_ms:
-            raise ConfigError("vad.min_utterance_ms must be less than vad.max_utterance_ms")
+            raise ConfigError(
+                "vad.min_utterance_ms must be less than vad.max_utterance_ms"
+            )
         if cfg.silence_ms_to_end < 100:
-            raise ConfigError("vad.silence_ms_to_end below 100 will chop words mid-sentence")
+            raise ConfigError(
+                "vad.silence_ms_to_end below 100 will chop words mid-sentence"
+            )
+
         return cfg
 
 
 @dataclass
 class DuplexConfig:
-    """Echo control for when a mic and a speaker share a room.
-
-    All of this is off in dual_mic mode: headphones solve it physically.
-    """
+    # the echo settings. all of this turns itself off in dual_mic mode
+    # because headphones already solve it
 
     shared_audio: bool = True
     bargein: bool = True
-    hangover_ms: int = 150  # keep the gate shut this long after playback ends
-    bargein_rms: float = 0.08  # normalized RMS that counts as "someone interrupted"
-    bargein_ms: int = 200  # ...sustained for this long
-    echo_guard_similarity: float = 0.85  # transcript vs. recent TTS text
+    hangover_ms: int = 150          # keep ignoring the mic this long after
+                                    # playback stops, for the room echo
+    bargein_rms: float = 0.08       # how loud counts as interrupting
+    bargein_ms: int = 200           # ...for this long
+    echo_guard_similarity: float = 0.85  # transcript vs what we just said
     echo_guard_window_s: float = 5.0
 
     @classmethod
-    def parse(cls, raw: Any) -> DuplexConfig:
+    def parse(cls, raw):
         raw = raw or {}
         if not isinstance(raw, dict):
             raise ConfigError("duplex must be a mapping")
+
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ConfigError(f"unknown duplex keys: {', '.join(sorted(unknown))}")
+
         cfg = cls(**{k: raw[k] for k in raw})
         if not 0.0 < cfg.echo_guard_similarity <= 1.0:
             raise ConfigError("duplex.echo_guard_similarity must be between 0 and 1")
@@ -198,34 +236,38 @@ class AppConfig:
     language_a: LanguageSlot = field(
         default_factory=lambda: LanguageSlot("en", "English", "alloy")
     )
-    language_b: LanguageSlot = field(default_factory=lambda: LanguageSlot("es", "Spanish", "nova"))
-    channels: list[ChannelConfig] = field(default_factory=list)
+    language_b: LanguageSlot = field(
+        default_factory=lambda: LanguageSlot("es", "Spanish", "nova")
+    )
+    channels: list = field(default_factory=list)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     duplex: DuplexConfig = field(default_factory=DuplexConfig)
     log_level: str = "WARNING"
-    source_path: Path | None = None
+    source_path: object = None
 
     @property
-    def language_codes(self) -> tuple[str, str]:
+    def language_codes(self):
         return (self.language_a.code, self.language_b.code)
 
-    def slot_for(self, code: str) -> LanguageSlot:
+    def slot_for(self, code):
         if code == self.language_a.code:
             return self.language_a
         if code == self.language_b.code:
             return self.language_b
         raise KeyError(f"{code!r} is not one of the two configured languages")
 
-    def other_language(self, code: str) -> str:
-        """The language an utterance in `code` should be translated into."""
-        return self.language_b.code if code == self.language_a.code else self.language_a.code
+    def other_language(self, code):
+        # if they spoke A translate to B, otherwise translate to A
+        if code == self.language_a.code:
+            return self.language_b.code
+        return self.language_a.code
 
 
-def _validate(cfg: AppConfig) -> AppConfig:
+def _validate(cfg):
     if cfg.language_a.code == cfg.language_b.code:
         raise ConfigError(
-            f"languages.a and languages.b are both {cfg.language_a.code!r} — "
+            f"languages.a and languages.b are both {cfg.language_a.code!r} - "
             "there would be nothing to translate"
         )
 
@@ -241,19 +283,21 @@ def _validate(cfg: AppConfig) -> AppConfig:
     if cfg.mode is Mode.SINGLE_MIC:
         if len(cfg.channels) != 1:
             raise ConfigError(
-                f"mode=single_mic needs exactly 1 channel, found {len(cfg.channels)}. "
-                "Use mode=dual_mic for two microphones."
+                f"mode=single_mic needs exactly 1 channel, found "
+                f"{len(cfg.channels)}. Use mode=dual_mic for two microphones."
             )
         if cfg.channels[0].language != "auto":
             raise ConfigError(
-                "mode=single_mic requires channels[0].language: auto — with one shared "
-                "mic the app has to detect who is speaking from the audio itself"
+                "mode=single_mic requires channels[0].language: auto - with one "
+                "shared mic the app has to detect who is speaking from the "
+                "audio itself"
             )
     else:
         if len(cfg.channels) != 2:
             raise ConfigError(
                 f"mode=dual_mic needs exactly 2 channels, found {len(cfg.channels)}"
             )
+
         pinned = [c.language for c in cfg.channels]
         if "auto" in pinned:
             raise ConfigError(
@@ -265,40 +309,47 @@ def _validate(cfg: AppConfig) -> AppConfig:
                 f"dual_mic channel languages {pinned} must be exactly the two "
                 f"configured languages {list(cfg.language_codes)}"
             )
+
         inputs = [c.input_device for c in cfg.channels]
         if inputs[0] is not None and inputs[0] == inputs[1]:
             raise ConfigError(
                 "dual_mic channels share input_device "
-                f"{inputs[0]!r} — both pipelines would hear both speakers. "
+                f"{inputs[0]!r} - both pipelines would hear both speakers. "
                 "Give each person their own microphone, or use mode=single_mic."
             )
 
-    # dual_mic assumes headsets, so the echo machinery is dead weight there.
+    # dual_mic means headsets, so all the echo stuff is pointless there
     if cfg.mode is Mode.DUAL_MIC and cfg.duplex.shared_audio:
         cfg.duplex.shared_audio = False
 
     return cfg
 
 
-def load(path: str | Path | None = None, *, env_file: str | Path | None = None) -> AppConfig:
-    """Load config.yaml (falling back to defaults) plus .env keys."""
-    load_dotenv(env_file) if env_file else load_dotenv()
+def load(path=None, *, env_file=None):
+    # loads config.yaml (or the defaults) plus the api keys from .env
+    if env_file:
+        load_dotenv(env_file)
+    else:
+        load_dotenv()
 
     if path is None:
         for candidate in ("config.yaml", "config.yml", "config.example.yaml"):
             if Path(candidate).exists():
                 path = candidate
                 break
+
     if path is None:
-        return _validate(_defaults())
+        return _validate(_defaults())  # no file anywhere, use defaults
 
     path = Path(path)
     if not path.exists():
         raise ConfigError(f"config file not found: {path}")
+
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
+
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} must contain a YAML mapping at the top level")
 
@@ -307,7 +358,7 @@ def load(path: str | Path | None = None, *, env_file: str | Path | None = None) 
     return cfg
 
 
-def from_dict(raw: dict[str, Any]) -> AppConfig:
+def from_dict(raw):
     mode_raw = str(raw.get("mode", "single_mic")).strip().lower()
     try:
         mode = Mode(mode_raw)
@@ -322,7 +373,8 @@ def from_dict(raw: dict[str, Any]) -> AppConfig:
     if "a" not in lang_raw or "b" not in lang_raw:
         raise ConfigError("languages must define both 'a' and 'b'")
 
-    taken: set[str] = set()
+    # keep track of the voices so both people don't end up sounding the same
+    taken = set()
     language_a = LanguageSlot.parse(lang_raw["a"], "a", taken)
     taken.add(language_a.voice)
     language_b = LanguageSlot.parse(lang_raw["b"], "b", taken)
@@ -348,9 +400,7 @@ def from_dict(raw: dict[str, Any]) -> AppConfig:
     return _validate(cfg)
 
 
-def _default_channels(
-    mode: Mode, language_a: LanguageSlot, language_b: LanguageSlot
-) -> list[ChannelConfig]:
+def _default_channels(mode, language_a, language_b):
     if mode is Mode.SINGLE_MIC:
         return [ChannelConfig(id="A", language="auto")]
     return [
@@ -359,19 +409,27 @@ def _default_channels(
     ]
 
 
-def _defaults() -> AppConfig:
+def _defaults():
     cfg = AppConfig()
     cfg.channels = _default_channels(cfg.mode, cfg.language_a, cfg.language_b)
     return cfg
 
 
-def to_dict(cfg: AppConfig) -> dict[str, Any]:
-    """Serialize back to the YAML shape, for the `--setup` wizard."""
+def to_dict(cfg):
+    # turn it back into the yaml shape, used by --setup
     return {
         "mode": cfg.mode.value,
         "languages": {
-            "a": {"code": cfg.language_a.code, "name": cfg.language_a.name, "voice": cfg.language_a.voice},
-            "b": {"code": cfg.language_b.code, "name": cfg.language_b.name, "voice": cfg.language_b.voice},
+            "a": {
+                "code": cfg.language_a.code,
+                "name": cfg.language_a.name,
+                "voice": cfg.language_a.voice,
+            },
+            "b": {
+                "code": cfg.language_b.code,
+                "name": cfg.language_b.name,
+                "voice": cfg.language_b.voice,
+            },
         },
         "channels": [
             {
@@ -407,7 +465,7 @@ def to_dict(cfg: AppConfig) -> dict[str, Any]:
     }
 
 
-def save(cfg: AppConfig, path: str | Path = "config.yaml") -> Path:
+def save(cfg, path="config.yaml"):
     path = Path(path)
     path.write_text(
         yaml.safe_dump(to_dict(cfg), sort_keys=False, allow_unicode=True),
@@ -416,23 +474,26 @@ def save(cfg: AppConfig, path: str | Path = "config.yaml") -> Path:
     return path
 
 
-# The literal values in .env.example. Setup says "copy .env.example to .env",
-# so forgetting to edit it is the single most likely first-run mistake — and
-# an unedited placeholder is truthy, which would otherwise sail past the
-# emptiness check and fail much later as an opaque 401.
+# the exact junk that is sitting in .env.example. the setup says "copy
+# .env.example to .env" so forgetting to actually edit it is the most likely
+# first mistake, and "sk-..." is a non empty string so it sails right past
+# the empty check and then you get a confusing 401 much later
 _PLACEHOLDER_KEYS = {"sk-...", "your-key-here", "changeme", "..."}
 
 
-def require_env(name: str, provider: str) -> str:
+def require_env(name, provider):
     value = os.environ.get(name, "").strip()
+
     if not value:
         raise ConfigError(
             f"{name} is not set, but the {provider!r} provider needs it. "
             f"Copy .env.example to .env and add your key."
         )
+
     if value in _PLACEHOLDER_KEYS:
         raise ConfigError(
             f"{name} is still the placeholder from .env.example. "
             f"Edit .env and replace it with a real {provider} key."
         )
+
     return value

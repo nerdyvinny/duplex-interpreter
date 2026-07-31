@@ -1,13 +1,10 @@
-"""Deterministic fake providers for the offline test suite.
-
-These let the whole orchestrator be exercised — routing, ordering, the echo
-guard, error handling — with no network, no API key and no audio hardware.
-"""
-
-from __future__ import annotations
+# fake providers for the tests
+#
+# these let me run the whole thing (routing, ordering, the echo guard,
+# error handling) with no network, no api key and no sound card. they give
+# back the same answer every time so the tests aren't flaky
 
 import asyncio
-from collections.abc import AsyncIterator
 
 import numpy as np
 
@@ -23,61 +20,55 @@ from .base import (
 
 
 class FakeSTT(STTProvider):
-    """Returns queued transcripts in order, one per utterance."""
-
+    # hands back whatever transcripts you queued up, in order
     name = "fake"
 
-    def __init__(
-        self,
-        transcripts: list[Transcript] | None = None,
-        *,
-        delay: float = 0.0,
-        delays: list[float] | None = None,
-    ) -> None:
+    def __init__(self, transcripts=None, *, delay=0.0, delays=None):
         self.transcripts = list(transcripts or [])
         self.delay = delay
-        self.delays = list(delays or [])
-        self.calls: list[dict] = []
+        self.delays = list(delays or [])  # per call, for testing ordering
+        self.calls = []
 
-    async def transcribe(
-        self,
-        pcm: np.ndarray,
-        *,
-        language: str | None = None,
-        candidates: tuple[str, ...] = (),
-    ) -> Transcript:
+    async def transcribe(self, pcm, *, language=None, candidates=()):
         index = len(self.calls)
         self.calls.append(
-            {"samples": int(pcm.size), "language": language, "candidates": candidates}
+            {
+                "samples": int(pcm.size),
+                "language": language,
+                "candidates": candidates,
+            }
         )
-        wait = self.delays[index] if index < len(self.delays) else self.delay
+
+        if index < len(self.delays):
+            wait = self.delays[index]
+        else:
+            wait = self.delay
         if wait:
             await asyncio.sleep(wait)
+
         if index < len(self.transcripts):
             return self.transcripts[index]
-        return Transcript(text="", language=language)
+        return Transcript(text="", language=language)  # ran out
 
 
 class FakeTranslation(TranslationProvider):
-    """Marks up the text so tests can assert direction without a real model."""
-
+    # tags the text with the direction so the tests can check which way
+    # it was translated without needing a real model
     name = "fake"
 
-    def __init__(self, *, delay: float = 0.0, fail_on: set[str] | None = None) -> None:
+    def __init__(self, *, delay=0.0, fail_on=None):
         self.delay = delay
         self.fail_on = fail_on or set()
-        self.calls: list[dict] = []
+        self.calls = []
 
-    async def translate(
-        self,
-        text: str,
-        *,
-        source: str,
-        target: str,
-        context: list[str] | None = None,
-    ) -> str:
+    async def translate(self, text, *, source, target, context=None):
         self.calls.append(
-            {"text": text, "source": source, "target": target, "context": list(context or [])}
+            {
+                "text": text,
+                "source": source,
+                "target": target,
+                "context": list(context or []),
+            }
         )
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -87,20 +78,22 @@ class FakeTranslation(TranslationProvider):
 
 
 class FakeTTS(TTSProvider):
-    """Emits a fixed amount of silence and records what it was asked to say."""
-
+    # gives back silence and writes down what it was asked to say
     name = "fake"
 
-    def __init__(self, *, delay: float = 0.0, samples: int = 1600) -> None:
+    def __init__(self, *, delay=0.0, samples=1600):
         self.delay = delay
         self.samples = samples
-        self.calls: list[dict] = []
+        self.calls = []
 
-    async def synthesize(self, text: str, *, language: str, voice: str) -> SpeechAudio:
+    async def synthesize(self, text, *, language, voice):
         self.calls.append({"text": text, "language": language, "voice": voice})
+
+        # grab these now, the generator below runs later and self might
+        # have moved on by then
         delay, samples = self.delay, self.samples
 
-        async def _chunks() -> AsyncIterator[bytes]:
+        async def _chunks():
             if delay:
                 await asyncio.sleep(delay)
             yield np.zeros(samples, dtype=np.int16).tobytes()

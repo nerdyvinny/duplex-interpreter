@@ -1,10 +1,6 @@
-"""End-to-end orchestrator behaviour with fake providers and fake audio.
-
-No network, no API key, no microphone — but every real module in the path:
-segmenter, duplex guard, router, pipeline, orchestrator.
-"""
-
-from __future__ import annotations
+# the big end to end tests. fake providers and fake audio, so no network,
+# no api key and no microphone, but every real module in between is the
+# actual one: segmenter, echo guard, router, pipeline, orchestrator
 
 import numpy as np
 import pytest
@@ -20,26 +16,19 @@ from interpreter.providers.base import Transcript
 from interpreter.providers.fake import FakeSTT, FakeTranslation, FakeTTS
 
 
-# --------------------------------------------------------------------------
-# playback ordering
-# --------------------------------------------------------------------------
+# ---- playback ordering ----
 
 
 async def test_playback_order_is_strict_even_when_a_later_turn_is_dropped():
-    """A drop releases its slot immediately, long before the turns ahead of it.
-
-    Every filtered utterance — self-echo, no speech recognized, a rejected
-    hallucination — releases as soon as it is filtered, which in a real
-    conversation is far sooner than the sentences queued in front of it finish
-    translating. Those early releases must not open the gate for anything but
-    the utterance whose turn it actually is.
-    """
+    # this is the bug I had for ages. a dropped sentence finishes way
+    # before the slow ones in front of it, and my old code let that unlock
+    # everything at once so they played out of order
     import asyncio
 
     order = PlaybackOrder()
-    played: list[int] = []
+    played = []
 
-    async def turn(seq: int, work: float, *, dropped: bool = False) -> None:
+    async def turn(seq, work, *, dropped=False):
         await asyncio.sleep(work)  # stt + translation
         if dropped:
             await order.release(seq)
@@ -52,9 +41,9 @@ async def test_playback_order_is_strict_even_when_a_later_turn_is_dropped():
     await asyncio.gather(
         turn(1, 0.00),
         turn(2, 0.01),
-        turn(3, 0.20),  # slow translation
-        turn(4, 0.12),  # ready well before 3
-        turn(5, 0.02, dropped=True),  # releases first of all
+        turn(3, 0.20),  # slow one
+        turn(4, 0.12),  # finishes before 3 does
+        turn(5, 0.02, dropped=True),  # dropped, so it releases first
     )
 
     assert played == [1, 2, 3, 4]
@@ -64,30 +53,31 @@ async def test_playback_order_survives_releases_arriving_backwards():
     import asyncio
 
     order = PlaybackOrder()
-    played: list[int] = []
+    played = []
 
-    async def turn(seq: int, work: float) -> None:
+    async def turn(seq, work):
         await asyncio.sleep(work)
         await order.wait_turn(seq)
         played.append(seq)
         await order.release(seq)
 
-    # Strictly decreasing readiness: every turn is ready before the one ahead.
+    # every one is ready before the one in front of it, so worst case
     await asyncio.gather(*(turn(seq, (6 - seq) * 0.02) for seq in range(1, 6)))
 
     assert played == [1, 2, 3, 4, 5]
 
 
 class Harness:
-    """Builds an orchestrator whose audio and providers are fully scripted."""
+    # builds an orchestrator where the audio and all three providers are
+    # scripted, so the tests are repeatable
 
-    def __init__(self, cfg, *, audio: dict[str, np.ndarray], stt: FakeSTT):
+    def __init__(self, cfg, *, audio, stt):
         self.cfg = cfg
         self.bus = EventBus()
         self.stt = stt
         self.translation = FakeTranslation()
         self.tts = FakeTTS()
-        self.speakers: dict[str, RecordingSpeaker] = {}
+        self.speakers = {}
         self._audio = audio
 
         self.orchestrator = Orchestrator(
@@ -110,7 +100,7 @@ class Harness:
         self.speakers[channel.id] = speaker
         return speaker
 
-    async def run(self, timeout: float = 20.0):
+    async def run(self, timeout=20.0):
         import asyncio
 
         await self.orchestrator.start()
@@ -120,15 +110,15 @@ class Harness:
             await self.orchestrator.shutdown()
         return self.bus.history
 
-    def events(self, stage: Stage):
+    def events(self, stage):
         return [e for e in self.bus.history if e.stage is stage]
 
 
-def one_utterance() -> np.ndarray:
+def one_utterance():
     return np.concatenate([silence(0.2), tone(0.8), silence(0.8)])
 
 
-def two_utterances() -> np.ndarray:
+def two_utterances():
     return np.concatenate(
         [silence(0.2), tone(0.8), silence(0.9), tone(0.8), silence(0.9)]
     )
@@ -148,7 +138,7 @@ async def test_single_mic_translates_english_to_spanish(single_mic_config):
     assert done[0].target_lang == "es"
     assert done[0].target_text == "[en->es] hello how are you"
 
-    # The translation was actually handed to the speaker.
+    # check it actually reached the speaker
     assert harness.speakers["A"].pcm().size > 0
 
 
@@ -185,7 +175,7 @@ async def test_both_directions_in_one_conversation(single_mic_config):
 
 
 async def test_dual_mic_cross_wires_output_to_the_other_headset(dual_mic_config):
-    """A speaks into mic A; the Spanish comes out of B's earpiece, not A's."""
+    # A talks into mic A, the spanish should come out of B's earpiece
     harness = Harness(
         dual_mic_config,
         audio={"A": one_utterance()},
@@ -203,11 +193,11 @@ async def test_dual_mic_cross_wires_output_to_the_other_headset(dual_mic_config)
 
 
 async def test_dual_mic_pins_language_and_skips_detection(dual_mic_config):
-    """Pinned channels must not run language ID at all — that's the point."""
+    # pinned channels should not even try to detect the language
     harness = Harness(
         dual_mic_config,
         audio={"A": one_utterance()},
-        # Ambiguous text that text-LID could plausibly call either way.
+        # "no" is a word in both languages so text detection cant help
         stt=FakeSTT([Transcript(text="no")]),
     )
     await harness.run()
@@ -219,7 +209,7 @@ async def test_dual_mic_pins_language_and_skips_detection(dual_mic_config):
 
 
 async def test_both_channels_run_concurrently(dual_mic_config):
-    """The whole promise: two people talking at once both get translated."""
+    # the whole point of the app, both people talking at the same time
     harness = Harness(
         dual_mic_config,
         audio={"A": one_utterance(), "B": one_utterance()},
@@ -239,7 +229,7 @@ async def test_both_channels_run_concurrently(dual_mic_config):
 
 
 async def test_playback_stays_in_order_when_stages_finish_out_of_order(single_mic_config):
-    """A fast short sentence must not overtake a slow earlier one."""
+    # a quick short sentence must not jump the queue past a slow one
     harness = Harness(
         single_mic_config,
         audio={"A": two_utterances()},
@@ -275,11 +265,9 @@ async def test_empty_transcript_is_dropped(single_mic_config):
 
 
 async def test_a_hallucinated_third_language_is_dropped(single_mic_config):
-    """From a live session: room noise came back from Whisper as Cyrillic.
-
-    It must be dropped, not routed by alternation into a "translation" of
-    noise into itself.
-    """
+    # this happened to me for real. the noise in my room came back from
+    # whisper as russian, and then it cheerfully "translated" the noise
+    # into more noise. it has to get dropped instead
     harness = Harness(
         single_mic_config,
         audio={"A": two_utterances()},
@@ -303,7 +291,7 @@ async def test_a_hallucinated_third_language_is_dropped(single_mic_config):
 
 
 async def test_self_echo_is_dropped(single_mic_config):
-    """The microphone hearing our own translation must not start a loop."""
+    # the mic hearing our own translation must not start the loop again
     harness = Harness(
         single_mic_config,
         audio={"A": two_utterances()},
@@ -323,7 +311,7 @@ async def test_self_echo_is_dropped(single_mic_config):
 
 
 async def test_dual_mic_does_not_apply_the_echo_guard(dual_mic_config):
-    """With headsets, repeating yourself is legitimate, not an echo."""
+    # with headsets repeating yourself is fine, its not an echo
     harness = Harness(
         dual_mic_config,
         audio={"A": two_utterances()},
@@ -338,7 +326,7 @@ async def test_dual_mic_does_not_apply_the_echo_guard(dual_mic_config):
 
 
 async def test_a_failing_translation_does_not_block_later_utterances(single_mic_config):
-    """One bad turn must not deadlock the ordered playback queue behind it."""
+    # one failed sentence must not deadlock everything queued behind it
     harness = Harness(
         single_mic_config,
         audio={"A": two_utterances()},

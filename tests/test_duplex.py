@@ -1,6 +1,4 @@
-"""The three echo-suppression layers."""
-
-from __future__ import annotations
+# tests for the three echo suppression layers
 
 import time
 
@@ -11,19 +9,17 @@ from interpreter.config import DuplexConfig
 from interpreter.duplex import DuplexGuard, normalize_for_compare
 
 
-def guard(**overrides) -> DuplexGuard:
+def guard(**overrides):
     cfg = DuplexConfig(**overrides)
     return DuplexGuard(cfg, channel_id="A")
 
 
-def frames(pcm: np.ndarray, size: int = 320):
+def frames(pcm, size=320):
     for offset in range(0, pcm.size - size + 1, size):
         yield pcm[offset : offset + size]
 
 
-# --------------------------------------------------------------------------
-# layer 1: the output gate
-# --------------------------------------------------------------------------
+# ---- layer 1: the output gate ----
 
 
 def test_audio_passes_when_nothing_is_playing():
@@ -42,7 +38,7 @@ def test_audio_is_suppressed_while_our_own_speaker_is_playing():
 
 
 def test_the_gate_stays_shut_for_the_hangover_after_playback():
-    """Room reverb outlives the last sample."""
+    # the room echo keeps going after the last sample
     g = guard(hangover_ms=200, bargein=False)
     g.playback_started()
     g.playback_finished()
@@ -60,9 +56,7 @@ def test_the_gate_is_off_entirely_for_headsets():
     assert not g.observe(tone(0.02))
 
 
-# --------------------------------------------------------------------------
-# layer 2: barge-in
-# --------------------------------------------------------------------------
+# ---- layer 2: barge-in ----
 
 
 def test_sustained_loud_speech_interrupts_playback():
@@ -80,12 +74,10 @@ def test_sustained_loud_speech_interrupts_playback():
 
 
 def test_the_hangover_is_skipped_after_a_barge_in():
-    """The interrupter is mid-sentence; the gate must not shut on them.
-
-    Playback still "finishes" after a barge-in — the pipeline stops the stream
-    and runs its teardown either way. Re-arming the hangover there would throw
-    away the opening of the very utterance the person interrupted to say.
-    """
+    # somebody interrupted and is talking RIGHT NOW, so don't shut the
+    # gate on them. playback still "finishes" after a barge in because the
+    # pipeline stops the stream and cleans up either way, and if I re-arm
+    # the hangover there I lose the start of what they interrupted to say
     g = guard(bargein=True, bargein_rms=0.05, bargein_ms=100, hangover_ms=200)
     g.set_bargein_callback(lambda: None)
     g.playback_started()
@@ -101,7 +93,7 @@ def test_the_hangover_is_skipped_after_a_barge_in():
 
 
 def test_the_hangover_still_applies_to_uninterrupted_playback():
-    """Only a barge-in skips it — the reverb tail is real the rest of the time."""
+    # only a barge in skips it, the room echo is real the rest of the time
     g = guard(bargein=True, bargein_rms=0.05, bargein_ms=100, hangover_ms=200)
     g.playback_started()
     g.playback_finished()
@@ -110,7 +102,7 @@ def test_the_hangover_still_applies_to_uninterrupted_playback():
 
 
 def test_a_barge_in_does_not_suppress_the_following_playback():
-    """The skip is one-shot, not a latch that disables the gate for good."""
+    # it should only skip once, not turn the gate off forever
     g = guard(bargein=True, bargein_rms=0.05, bargein_ms=100, hangover_ms=200)
     g.set_bargein_callback(lambda: None)
 
@@ -140,7 +132,7 @@ def test_a_brief_noise_does_not_interrupt():
 
 
 def test_quiet_leakage_never_interrupts():
-    """Our own translation bleeding into the mic must not count as barge-in."""
+    # our own voice leaking into the mic is not somebody interrupting
     stopped = []
     g = guard(bargein=True, bargein_rms=0.15, bargein_ms=100)
     g.set_bargein_callback(lambda: stopped.append(True))
@@ -166,9 +158,7 @@ def test_a_failing_bargein_callback_does_not_propagate():
     assert g.bargeins >= 1
 
 
-# --------------------------------------------------------------------------
-# layer 3: the self-echo text guard
-# --------------------------------------------------------------------------
+# ---- layer 3: the self-echo text guard ----
 
 
 def test_exact_repeats_of_our_own_speech_are_dropped():
@@ -187,7 +177,7 @@ def test_punctuation_and_case_differences_still_match():
 
 
 def test_a_truncated_echo_still_matches():
-    """The gate usually catches the start, so only the tail leaks through."""
+    # the gate normally catches the start so only the end leaks out
     g = guard()
     g.note_spoken("donde esta la estacion de tren mas cercana")
 
@@ -207,7 +197,7 @@ def test_echoes_expire_after_the_window():
     g.note_spoken("hola como estas")
     time.sleep(0.3)
 
-    # Said again much later: that is a real repetition, not an echo.
+    # said again much later, thats a real repeat not an echo
     assert not g.is_self_echo("hola como estas")
 
 

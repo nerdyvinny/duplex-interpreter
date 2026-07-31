@@ -1,15 +1,11 @@
-"""Optional cloud upgrades: DeepL translation and ElevenLabs voices.
-
-Both are drop-in replacements for the OpenAI stages. DeepL is noticeably
-better on European pairs and has a 500k-chars/month free tier; ElevenLabs
-Flash v2.5 has the lowest synthesis latency of anything available.
-"""
-
-from __future__ import annotations
+# optional upgrades: deepl for translating and elevenlabs for the voice
+#
+# both just drop in place of the openai versions. deepl is noticeably
+# better between european languages and has a free tier (500k characters a
+# month), elevenlabs flash is the fastest tts I could find
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
 from functools import lru_cache
 
 from ..config import ConfigError, require_env
@@ -19,32 +15,34 @@ log = logging.getLogger(__name__)
 
 ELEVENLABS_SAMPLE_RATE = 24_000
 
-# DeepL insists on a regional variant for these targets.
+# deepl won't accept plain "en" or "pt", it wants a region on these
 _DEEPL_TARGET_OVERRIDES = {
     "en": "EN-US",
     "pt": "PT-BR",
     "zh": "ZH-HANS",
 }
 
-# Public ElevenLabs voices, so a config written for OpenAI voice names still
-# produces two distinguishable speakers instead of an error.
+# elevenlabs uses long id strings instead of names. if somebody wrote an
+# openai voice name in their config I map it to a real public voice so
+# they still get two different sounding people instead of an error
 _ELEVENLABS_FALLBACK_VOICES = {
-    "alloy": "21m00Tcm4TlvDq8ikWAM",  # Rachel
-    "nova": "EXAVITQu4vr4xnSDxMaL",  # Bella
+    "alloy": "21m00Tcm4TlvDq8ikWAM",   # Rachel
+    "nova": "EXAVITQu4vr4xnSDxMaL",    # Bella
     "shimmer": "ThT5KcBeYPX3keUQqHPh",  # Dorothy
-    "echo": "pNInz6obpgDQGcFmaJgB",  # Adam
-    "onyx": "VR6AewLTigWG4xSOukaG",  # Arnold
-    "sage": "TxGEqnHWrfWFTfGW9XjX",  # Josh
+    "echo": "pNInz6obpgDQGcFmaJgB",    # Adam
+    "onyx": "VR6AewLTigWG4xSOukaG",    # Arnold
+    "sage": "TxGEqnHWrfWFTfGW9XjX",    # Josh
 }
 
 
 class DeepLTranslation(TranslationProvider):
     name = "deepl"
 
-    def __init__(self, model: str | None = None) -> None:
-        del model  # DeepL has no model selection
+    def __init__(self, model=None):
+        # deepl has no model choice, the argument is just so it matches
+        # the shape of the other providers
         try:
-            import deepl  # noqa: F401
+            import deepl
         except ImportError as exc:
             raise ConfigError(
                 "providers.translation is 'deepl' but the package is missing. "
@@ -55,26 +53,24 @@ class DeepLTranslation(TranslationProvider):
     @lru_cache(maxsize=1)
     def _translator():
         import deepl
-
         return deepl.Translator(require_env("DEEPL_API_KEY", "deepl"))
 
-    async def translate(
-        self,
-        text: str,
-        *,
-        source: str,
-        target: str,
-        context: list[str] | None = None,
-    ) -> str:
+    async def translate(self, text, *, source, target, context=None):
         if not text.strip():
             return ""
 
         target_code = _DEEPL_TARGET_OVERRIDES.get(target, target.upper())
-        # DeepL's context parameter improves consistency without being
-        # translated itself — exactly what we want for conversation history.
-        context_text = "\n".join(context[-3:]) if context else None
 
-        def _call() -> str:
+        # deepl's context parameter is nice, it reads the history to get
+        # the tone right but doesn't translate it
+        if context:
+            context_text = "\n".join(context[-3:])
+        else:
+            context_text = None
+
+        # the deepl library is not async so it has to go on a thread,
+        # otherwise it blocks the audio
+        def _call():
             try:
                 result = self._translator().translate_text(
                     text,
@@ -83,7 +79,7 @@ class DeepLTranslation(TranslationProvider):
                     context=context_text,
                     preserve_formatting=True,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise ProviderError(f"DeepL translation failed: {exc}") from exc
             return str(result.text).strip()
 
@@ -93,10 +89,10 @@ class DeepLTranslation(TranslationProvider):
 class ElevenLabsTTS(TTSProvider):
     name = "elevenlabs"
 
-    def __init__(self, model: str = "eleven_flash_v2_5") -> None:
+    def __init__(self, model="eleven_flash_v2_5"):
         self.model = model
         try:
-            import elevenlabs  # noqa: F401
+            import elevenlabs
         except ImportError as exc:
             raise ConfigError(
                 "providers.tts is 'elevenlabs' but the package is missing. "
@@ -107,23 +103,24 @@ class ElevenLabsTTS(TTSProvider):
     @lru_cache(maxsize=1)
     def _client():
         from elevenlabs.client import AsyncElevenLabs
+        return AsyncElevenLabs(
+            api_key=require_env("ELEVENLABS_API_KEY", "elevenlabs")
+        )
 
-        return AsyncElevenLabs(api_key=require_env("ELEVENLABS_API_KEY", "elevenlabs"))
-
-    def _resolve_voice(self, voice: str) -> str:
+    def _resolve_voice(self, voice):
         mapped = _ELEVENLABS_FALLBACK_VOICES.get(voice.lower())
         if mapped:
             log.debug("mapped voice %r to ElevenLabs voice %s", voice, mapped)
             return mapped
-        return voice  # assume it is already a voice ID
+        return voice  # assume they already put a real voice id in
 
-    async def synthesize(self, text: str, *, language: str, voice: str) -> SpeechAudio:
+    async def synthesize(self, text, *, language, voice):
         return SpeechAudio(
             chunks=self._stream(text, self._resolve_voice(voice), language),
             sample_rate=ELEVENLABS_SAMPLE_RATE,
         )
 
-    async def _stream(self, text: str, voice_id: str, language: str) -> AsyncIterator[bytes]:
+    async def _stream(self, text, voice_id, language):
         remainder = b""
         try:
             stream = self._client().text_to_speech.stream(
@@ -136,6 +133,7 @@ class ElevenLabsTTS(TTSProvider):
             async for chunk in stream:
                 if not chunk:
                     continue
+                # same 2 byte alignment thing as the openai one
                 data = remainder + chunk
                 usable = len(data) - (len(data) % 2)
                 remainder = data[usable:]
@@ -143,5 +141,5 @@ class ElevenLabsTTS(TTSProvider):
                     yield data[:usable]
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"ElevenLabs synthesis failed: {exc}") from exc

@@ -1,10 +1,8 @@
-"""VAD segmentation over synthetic audio.
-
-Uses the deterministic energy backend so these assert the *state machine*,
-not the acoustic model.
-"""
-
-from __future__ import annotations
+# tests for the sentence splitting
+#
+# these use the energy vad on purpose. its dumb but its 100% predictable,
+# so if one of these fails its my state machine that broke and not the
+# neural net having an opinion
 
 import numpy as np
 import pytest
@@ -14,7 +12,8 @@ from interpreter.audio.vad import EnergyVad, SpeechSegmenter, State
 from interpreter.config import PIPELINE_SAMPLE_RATE, VadConfig
 
 
-def segmenter(**overrides) -> SpeechSegmenter:
+def segmenter(**overrides):
+    # helper so I'm not writing out the whole config in every test
     cfg = VadConfig(
         silence_ms_to_end=overrides.pop("silence_ms_to_end", 300),
         preroll_ms=overrides.pop("preroll_ms", 100),
@@ -25,7 +24,7 @@ def segmenter(**overrides) -> SpeechSegmenter:
     return SpeechSegmenter(cfg, backend=EnergyVad(threshold=0.02), **overrides)
 
 
-def feed(seg: SpeechSegmenter, *parts: np.ndarray) -> list:
+def feed(seg, *parts):
     utterances = []
     for part in parts:
         utterances.extend(seg.push(part))
@@ -39,7 +38,7 @@ def test_single_utterance_is_segmented():
     assert len(found) == 1
     assert found[0].seq == 1
     assert found[0].channel_id == "A"
-    # ~1s of speech plus pre-roll and the retained tail.
+    # about 1 second of talking, plus the preroll and the bit of tail I keep
     assert 0.9 <= found[0].duration_seconds <= 1.6
 
 
@@ -49,7 +48,7 @@ def test_two_utterances_separated_by_a_pause():
         seg,
         silence(0.2),
         tone(0.8),
-        silence(0.7),  # longer than silence_ms_to_end -> closes the first
+        silence(0.7),  # longer than silence_ms_to_end so the first one closes
         tone(0.8),
         silence(0.7),
     )
@@ -59,7 +58,8 @@ def test_two_utterances_separated_by_a_pause():
 
 
 def test_short_pause_does_not_split_an_utterance():
-    """A speaker drawing breath mid-sentence must not produce two turns."""
+    # somebody taking a breath in the middle of a sentence should not
+    # turn into two seperate translations
     seg = segmenter(silence_ms_to_end=500)
     found = feed(seg, tone(0.6), silence(0.2), tone(0.6), silence(0.9))
 
@@ -75,7 +75,8 @@ def test_blips_below_the_minimum_are_dropped():
 
 
 def test_preroll_keeps_audio_from_before_the_trigger():
-    """Without pre-roll every utterance would start mid-word."""
+    # without the preroll every sentence starts halfway through the first
+    # word, so more preroll should mean more audio
     with_preroll = segmenter(preroll_ms=300, start_frames=3)
     without = segmenter(preroll_ms=20, start_frames=3)
 
@@ -96,17 +97,17 @@ def test_max_duration_force_flushes_a_monologue():
 
 def test_flush_closes_an_open_utterance():
     seg = segmenter()
-    assert feed(seg, tone(0.8)) == []
+    assert feed(seg, tone(0.8)) == []  # still going, nothing returned yet
     assert seg.state is State.SPEAKING
 
     trailing = seg.flush()
     assert trailing is not None
     assert trailing.duration_seconds > 0.5
-    assert seg.flush() is None  # nothing left
+    assert seg.flush() is None  # second time theres nothing left
 
 
 def test_reset_discards_the_in_progress_segment():
-    """This is what the duplex gate calls when our own speaker starts."""
+    # this is what the echo gate calls when our own speaker kicks in
     seg = segmenter()
     feed(seg, tone(0.8))
     assert seg.in_speech
@@ -122,12 +123,13 @@ def test_pure_silence_produces_nothing():
 
 
 def test_arbitrary_chunk_sizes_are_rebuffered():
-    """Frames arrive at whatever size the device gives us."""
+    # real devices hand you whatever size they feel like, not neat windows
     seg = segmenter()
     audio = np.concatenate([silence(0.2), tone(1.0), silence(0.6)])
 
     found = []
-    for offset in range(0, audio.size, 137):  # deliberately not a window multiple
+    # 137 is deliberately a weird number that doesn't divide evenly
+    for offset in range(0, audio.size, 137):
         found.extend(seg.push(audio[offset : offset + 137]))
 
     assert len(found) == 1
@@ -144,13 +146,10 @@ def test_sequence_numbers_increment_per_channel():
 
 
 def test_silero_detects_real_speech_and_rejects_silence():
-    """Regression guard for the v5 context window.
-
-    Silero v5 conditions each 512-sample window on the 64 samples before it.
-    Omitting that context makes the model return near-zero probability for
-    everything, so the app silently never hears anyone. Skipped when the
-    model can't be fetched.
-    """
+    # this one is here because of a bug that cost me a whole evening.
+    # silero v5 needs the 64 samples before each window fed in with it. if
+    # you skip that it returns basically zero for everything and the app
+    # just never hears anybody, with no error message at all
     from pathlib import Path
 
     from interpreter.audio.vad import SileroVad, VadUnavailable
@@ -173,6 +172,7 @@ def test_silero_detects_real_speech_and_rejects_silence():
     )
     assert voiced > 20, "Silero found essentially no speech in a spoken WAV"
 
+    # and it should not hear things that aren't there
     backend.reset()
     quiet = silence(2.0)
     voiced_in_silence = sum(
@@ -211,7 +211,8 @@ def test_silero_and_webrtc_agree_on_the_sample():
 
 @pytest.mark.parametrize("backend_name", ["webrtc"])
 def test_real_backend_finds_speech_shaped_audio(backend_name):
-    """Smoke test against the real WebRTC VAD, not the energy stand-in."""
+    # everything above uses my fake energy vad, so this one checks the
+    # actual webrtc one still works
     from interpreter.audio.vad import WebrtcVad
 
     cfg = VadConfig(
@@ -222,7 +223,9 @@ def test_real_backend_finds_speech_shaped_audio(backend_name):
     )
     seg = SpeechSegmenter(cfg, backend=WebrtcVad(0))
 
-    # A formant-ish buzz: WebRTC's VAD keys off spectral shape, not level.
+    # a plain sine wave does NOT work here. webrtc looks at the shape of
+    # the frequencies not how loud it is, so I stack a few harmonics to
+    # make something vaguely voice shaped
     t = np.arange(int(PIPELINE_SAMPLE_RATE * 1.2)) / PIPELINE_SAMPLE_RATE
     voiced = sum(np.sin(2 * np.pi * f * t) for f in (140, 280, 700, 1400, 2100))
     speechlike = (voiced / 5 * 0.4 * 32767).astype(np.int16)

@@ -1,26 +1,23 @@
-"""Text-based language identification between exactly two candidates.
-
-Whisper's *audio* language ID is unreliable on the short utterances a
-conversation is made of ("no", "ok", "si"). Once we have the transcript,
-deciding between two known candidates is a much easier problem, and doing it
-on text is both instant and offline.
-
-Two stages:
-  1. Script detection — decisive when the candidates use different alphabets
-     (en/ru, en/ar, en/zh, ...). This is essentially always correct.
-  2. Stopword and character scoring — for same-script pairs (en/es, fr/de).
-     Returns a confidence the caller can threshold, falling back to the
-     alternation heuristic when it is too low to trust.
-"""
-
-from __future__ import annotations
+# guesses which of the two languages a piece of text is
+#
+# whisper can tell you what language the AUDIO was but its bad at it when
+# the sentence is short, and conversations are full of short sentences like
+# "no", "ok", "si". once I have the text though, picking between 2 languages
+# I already know is a much easier problem, plus its instant and offline.
+#
+# two steps:
+#   1. look at the alphabet. if its english vs russian this is basically
+#      always right and I can stop here
+#   2. count common words and accented letters. this is for when both
+#      languages use the same alphabet like english vs spanish
 
 import re
 import unicodedata
 from dataclasses import dataclass
 
-# Scripts that identify a language essentially on sight.
-_SCRIPT_RANGES: list[tuple[str, tuple[int, int]]] = [
+# alphabets that give the language away immediately.
+# these are unicode ranges, I got them off the unicode charts
+_SCRIPT_RANGES = [
     ("cyrillic", (0x0400, 0x04FF)),
     ("greek", (0x0370, 0x03FF)),
     ("hebrew", (0x0590, 0x05FF)),
@@ -32,7 +29,7 @@ _SCRIPT_RANGES: list[tuple[str, tuple[int, int]]] = [
     ("han", (0x4E00, 0x9FFF)),
 ]
 
-_LANG_SCRIPTS: dict[str, set[str]] = {
+_LANG_SCRIPTS = {
     "ru": {"cyrillic"},
     "uk": {"cyrillic"},
     "el": {"greek"},
@@ -42,13 +39,14 @@ _LANG_SCRIPTS: dict[str, set[str]] = {
     "hi": {"devanagari"},
     "th": {"thai"},
     "ko": {"hangul"},
-    "ja": {"kana", "han"},
+    "ja": {"kana", "han"},  # japanese uses both
     "zh": {"han"},
 }
 
-# High-frequency function words. Deliberately short lists: these are the words
-# that actually show up in one-sentence conversational turns.
-_STOPWORDS: dict[str, set[str]] = {
+# the most common little words in each language. I kept these short on
+# purpose, these are the words that actually show up when somebody says
+# one sentence out loud
+_STOPWORDS = {
     "en": {
         "the", "and", "is", "are", "you", "i", "to", "of", "it", "that", "this",
         "what", "how", "not", "do", "does", "did", "have", "has", "was", "were",
@@ -120,8 +118,8 @@ _STOPWORDS: dict[str, set[str]] = {
     },
 }
 
-# Characters that only really appear in one of a pair of same-script languages.
-_MARKER_CHARS: dict[str, str] = {
+# letters you basically only see in one language of a pair
+_MARKER_CHARS = {
     "es": "ñ¿¡áéíóúü",
     "fr": "àâçéèêëîïôûùüÿœ",
     "de": "äöüß",
@@ -134,29 +132,33 @@ _MARKER_CHARS: dict[str, str] = {
     "vi": "ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệ",
 }
 
+# grabs words, no numbers or underscores
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 
 @dataclass
 class LangGuess:
-    language: str | None
-    confidence: float  # 0..1
+    language: str
+    confidence: float  # 0 to 1
     reason: str
-    # True when the text is definitively in *neither* candidate language —
-    # as opposed to `language is None`, which only means "can't tell". The
-    # caller should drop these rather than fall back to guessing: they are
-    # almost always the recognizer hallucinating on noise.
+    # foreign=True means its definitely NEITHER language, which is different
+    # from language=None which just means I couldn't tell. the caller should
+    # throw the foreign ones away, they're almost always whisper making
+    # stuff up about background noise
     foreign: bool = False
 
 
-def _strip_accents(text: str) -> str:
+def _strip_accents(text):
+    # café -> cafe
     return "".join(
-        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
     )
 
 
-def _script_profile(text: str) -> dict[str, int]:
-    counts: dict[str, int] = {}
+def _script_profile(text):
+    # count how many letters of each alphabet are in here
+    counts = {}
     for char in text:
         code = ord(char)
         for script, (low, high) in _SCRIPT_RANGES:
@@ -164,39 +166,44 @@ def _script_profile(text: str) -> dict[str, int]:
                 counts[script] = counts.get(script, 0) + 1
                 break
         else:
+            # the for/else runs when the loop didn't break, so this is a
+            # letter that wasn't in any of my ranges
             if char.isalpha() and code < 0x0250:
                 counts["latin"] = counts.get("latin", 0) + 1
     return counts
 
 
-def identify(text: str, candidates: tuple[str, ...]) -> LangGuess:
-    """Pick which of `candidates` `text` is written in."""
+def identify(text, candidates):
     if len(candidates) != 2:
         raise ValueError(f"expected exactly 2 candidates, got {candidates}")
+
     stripped = text.strip()
     if not stripped:
         return LangGuess(None, 0.0, "empty text")
 
     first, second = candidates
 
-    # --- stage 1: script ---
+    # ---- step 1, the alphabet ----
     scripts = _script_profile(stripped)
     if scripts:
         dominant = max(scripts, key=lambda s: scripts[s])
         total = sum(scripts.values())
         share = scripts[dominant] / total
+
         first_scripts = _LANG_SCRIPTS.get(first, {"latin"})
         second_scripts = _LANG_SCRIPTS.get(second, {"latin"})
+
+        # only useful if the two languages use different alphabets
         if first_scripts != second_scripts and share >= 0.6:
             if dominant in first_scripts and dominant not in second_scripts:
                 return LangGuess(first, 0.98, f"{dominant} script")
             if dominant in second_scripts and dominant not in first_scripts:
                 return LangGuess(second, 0.98, f"{dominant} script")
 
-        # Written in an alphabet neither speaker uses. Whisper does this when
-        # it hallucinates on background noise — a room hum came back as
-        # Cyrillic in live testing. Guessing a direction for this is worse
-        # than admitting it is not speech we were asked to handle.
+        # its written in an alphabet NEITHER person uses. whisper does this
+        # when its hallucinating on noise, I had my fan come back as russian
+        # once. guessing a direction for this is worse than admitting its
+        # not something we were asked to handle
         if share >= 0.6 and dominant not in first_scripts | second_scripts:
             return LangGuess(
                 None,
@@ -205,56 +212,69 @@ def identify(text: str, candidates: tuple[str, ...]) -> LangGuess:
                 foreign=True,
             )
 
-    # --- stage 2: stopwords + marker characters ---
+    # ---- step 2, common words + accents ----
     words = [w.lower() for w in _WORD_RE.findall(stripped)]
     if not words:
         return LangGuess(None, 0.0, "no alphabetic words")
+
     folded = [_strip_accents(w) for w in words]
     lowered = stripped.lower()
 
-    scores: dict[str, float] = {}
+    scores = {}
     for lang in candidates:
         stopwords = _STOPWORDS.get(lang, set())
         hits = sum(1 for w in folded if w in stopwords)
         score = hits / len(folded)
+
         markers = _MARKER_CHARS.get(lang, "")
         if markers:
             marker_hits = sum(1 for c in lowered if c in markers)
-            # Accented characters are strong evidence but shouldn't swamp a
-            # long sentence's worth of stopword evidence.
+            # accents are strong evidence but I cap it, otherwise one ñ
+            # beats a whole sentence of english words
             score += min(0.5, marker_hits * 0.25)
+
         scores[lang] = score
 
-    best, worst = (first, second) if scores[first] >= scores[second] else (second, first)
+    if scores[first] >= scores[second]:
+        best, worst = first, second
+    else:
+        best, worst = second, first
+
     margin = scores[best] - scores[worst]
     if scores[best] <= 0.0:
         return LangGuess(None, 0.0, "no distinguishing words")
 
-    # Map the margin onto a confidence. A single stopword in a three-word
-    # sentence should not read as certainty.
+    # turn the margin into a confidence number. longer sentences get a
+    # small bonus because theres more evidence
     confidence = min(0.95, margin * 2.5 + min(len(folded), 8) / 40.0)
-    return LangGuess(best, confidence, f"lexical margin {margin:.2f} over {len(folded)} words")
+    return LangGuess(
+        best, confidence, f"lexical margin {margin:.2f} over {len(folded)} words"
+    )
 
 
-def normalize_language_name(value: str | None) -> str | None:
-    """Map whatever an STT API returned onto an ISO-639-1 code.
-
-    `whisper-1` returns full English names ("english"); newer models return
-    codes, or nothing at all.
-    """
+def normalize_language_name(value):
+    # the speech apis are inconsistent about this. whisper-1 gives you
+    # "english", the newer models give "en", and sometimes nothing at all
     if not value:
         return None
+
     cleaned = value.strip().lower().replace("_", "-")
     if not cleaned:
         return None
+
+    # already a code like "en" or "en-US"
     if len(cleaned) <= 3 or "-" in cleaned:
         return cleaned.split("-")[0]
 
+    # imported here to avoid a circular import, languages doesn't need me
+    # but config imports both
     from . import languages
 
     for code, lang in languages.LANGUAGES.items():
         if cleaned == lang.name.lower():
             return code
+
+    # names that don't match my table
     extra = {
         "mandarin": "zh",
         "chinese": "zh",

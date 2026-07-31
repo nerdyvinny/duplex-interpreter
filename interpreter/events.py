@@ -1,125 +1,110 @@
-"""Event bus connecting the pipeline to whatever is displaying it.
-
-The pipeline never imports the UI. It emits events here; the CLI subscribes.
-That keeps a future GUI a matter of adding a second subscriber rather than
-rewriting the orchestrator.
-"""
-
-from __future__ import annotations
+# little event system so the pipeline can tell the screen whats happening
+# without importing the screen code. the pipeline just emits stuff here and
+# the cli listens. means I could add a gui later without touching any of the
+# audio code
 
 import asyncio
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 log = logging.getLogger(__name__)
 
 
 class Stage(str, Enum):
-    """Where an utterance is in the cascade."""
-
-    CAPTURED = "captured"  # VAD closed a segment
-    TRANSCRIBED = "transcribed"  # STT returned text
-    TRANSLATED = "translated"  # MT returned text
-    SPEAKING = "speaking"  # first TTS bytes hit the speaker
-    DONE = "done"  # playback finished
-    DROPPED = "dropped"  # filtered out (self-echo, too short, no speech)
+    # where a sentence is in the chain
+    CAPTURED = "captured"        # vad decided a sentence ended
+    TRANSCRIBED = "transcribed"  # got the text back
+    TRANSLATED = "translated"    # got the translation back
+    SPEAKING = "speaking"        # first audio hit the speaker
+    DONE = "done"                # finished playing
+    DROPPED = "dropped"          # thrown away (echo, too short, silence)
     ERROR = "error"
 
 
 @dataclass
 class PipelineEvent:
-    """One state change for one utterance."""
-
     seq: int
     channel_id: str
     stage: Stage
 
-    source_lang: str | None = None
-    target_lang: str | None = None
-    source_text: str | None = None
-    target_text: str | None = None
+    source_lang: str = None
+    target_lang: str = None
+    source_text: str = None
+    target_text: str = None
 
-    # Per-stage wall-clock durations in ms, accumulated as the utterance moves.
-    timings: dict[str, float] = field(default_factory=dict)
+    # how long each stage took in ms, fills up as the sentence moves along
+    timings: dict = field(default_factory=dict)
 
-    # Seconds of audio captured, for the "is my VAD tuned right" sanity check.
-    audio_seconds: float | None = None
+    # seconds of audio, useful for checking if the vad is set right
+    audio_seconds: float = None
 
-    detail: str | None = None  # drop reason or error message
+    detail: str = None  # why it was dropped, or the error message
 
     @property
-    def total_ms(self) -> float:
+    def total_ms(self):
         return sum(self.timings.values())
 
 
-Subscriber = Callable[[PipelineEvent], None]
-
-
 class EventBus:
-    """Fan-out to synchronous subscribers.
+    # subscribers get called right away on the event loop so they need to
+    # be quick and they must not raise. a broken display should never take
+    # down the actual conversation
 
-    Subscribers run inline on the event loop, so they must be cheap and must
-    not raise — a broken display should never take down a conversation.
-    """
-
-    def __init__(self) -> None:
-        self._subscribers: list[Subscriber] = []
-        self._history: list[PipelineEvent] = []
+    def __init__(self):
+        self._subscribers = []
+        self._history = []
         self._history_limit = 500
 
-    def subscribe(self, subscriber: Subscriber) -> Callable[[], None]:
+    def subscribe(self, subscriber):
         self._subscribers.append(subscriber)
 
-        def unsubscribe() -> None:
+        # give back a function that undoes it
+        def unsubscribe():
             if subscriber in self._subscribers:
                 self._subscribers.remove(subscriber)
 
         return unsubscribe
 
-    def emit(self, event: PipelineEvent) -> None:
+    def emit(self, event):
         self._history.append(event)
         if len(self._history) > self._history_limit:
             del self._history[: len(self._history) - self._history_limit]
 
+        # copy the list first in case somebody unsubscribes while we loop
         for subscriber in list(self._subscribers):
             try:
                 subscriber(event)
-            except Exception:  # noqa: BLE001 - a bad subscriber must not kill the run
+            except Exception:
                 log.exception("event subscriber failed")
 
     @property
-    def history(self) -> list[PipelineEvent]:
+    def history(self):
         return list(self._history)
 
 
 class AsyncSignal:
-    """Single-value latch usable from both a thread and the event loop.
+    # a flag you can set from a normal thread or from async code.
+    # I use it to wake things up on ctrl-c
 
-    Used to wake the orchestrator on Ctrl-C from the PortAudio callback thread
-    or a signal handler.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self):
         self._event = asyncio.Event()
-        self._payload: Any = None
+        self._payload = None
 
-    def set_threadsafe(self, loop: asyncio.AbstractEventLoop, payload: Any = None) -> None:
-        def _set() -> None:
+    def set_threadsafe(self, loop, payload=None):
+        def _set():
             self._payload = payload
             self._event.set()
 
         loop.call_soon_threadsafe(_set)
 
-    def set(self, payload: Any = None) -> None:
+    def set(self, payload=None):
         self._payload = payload
         self._event.set()
 
-    async def wait(self) -> Any:
+    async def wait(self):
         await self._event.wait()
         return self._payload
 
-    def is_set(self) -> bool:
+    def is_set(self):
         return self._event.is_set()

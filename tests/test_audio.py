@@ -1,6 +1,4 @@
-"""Resampling, WAV framing, and the playback ring buffer."""
-
-from __future__ import annotations
+# tests for resampling, wav files, and the speaker ring buffer
 
 import numpy as np
 import pytest
@@ -17,9 +15,7 @@ from interpreter.config import PIPELINE_SAMPLE_RATE
 from interpreter.providers.base import pcm_to_wav_bytes, wav_bytes_to_pcm
 
 
-# --------------------------------------------------------------------------
-# resampling
-# --------------------------------------------------------------------------
+# ---- resampling ----
 
 
 @pytest.mark.parametrize(("src", "dst"), [(16_000, 24_000), (24_000, 16_000), (48_000, 16_000), (22_050, 24_000)])
@@ -42,7 +38,7 @@ def test_empty_input_is_handled():
 
 
 def test_resampling_keeps_the_signal_not_just_the_length():
-    """A round trip should still look like the original waveform."""
+    # up and back down again should look basically like it started
     original = tone(0.5, freq=440)
     round_tripped = resample_int16(resample_int16(original, 16_000, 48_000), 48_000, 16_000)
 
@@ -54,7 +50,7 @@ def test_resampling_keeps_the_signal_not_just_the_length():
 
 
 def test_stream_resampler_matches_a_single_pass():
-    """Chunked TTS audio must not click at chunk boundaries."""
+    # this is the clicking bug. chunk by chunk must match doing it in one go
     pcm = tone(0.5)
     streaming = StreamResampler(16_000, 24_000)
 
@@ -102,9 +98,7 @@ def test_rms_tracks_level():
     assert rms(np.zeros(0, dtype=np.int16)) == 0.0
 
 
-# --------------------------------------------------------------------------
-# WAV framing
-# --------------------------------------------------------------------------
+# ---- wav framing ----
 
 
 def test_wav_round_trip():
@@ -134,9 +128,7 @@ def test_a_stereo_wav_is_downmixed_on_read():
     assert pcm.size == mono.size
 
 
-# --------------------------------------------------------------------------
-# playback
-# --------------------------------------------------------------------------
+# ---- playback ----
 
 
 async def _chunks(*payloads: bytes):
@@ -157,7 +149,7 @@ async def test_recording_speaker_collects_audio():
 
 
 async def test_first_audio_callback_fires_once_on_the_first_chunk():
-    """This is what starts the latency clock and closes the duplex gate."""
+    # this callback is what starts the timer and shuts the echo gate
     speaker = RecordingSpeaker()
     fired = []
     payload = tone(0.05).tobytes()
@@ -172,7 +164,7 @@ async def test_first_audio_callback_fires_once_on_the_first_chunk():
 
 
 async def test_stop_cancels_an_in_flight_stream():
-    """Barge-in depends on this returning False rather than playing on."""
+    # interrupting only works if this returns False instead of carrying on
     speaker = RecordingSpeaker()
     payload = tone(0.05).tobytes()
 
@@ -203,9 +195,7 @@ async def test_playback_resamples_to_the_device_rate():
     assert abs(speaker.pcm().size - 48_000) < 48_000 * 0.05
 
 
-# --------------------------------------------------------------------------
-# array microphone
-# --------------------------------------------------------------------------
+# ---- array microphone ----
 
 
 async def test_array_microphone_yields_fixed_size_frames():
@@ -221,7 +211,7 @@ async def test_array_microphone_yields_fixed_size_frames():
 
 
 async def test_array_microphone_appends_trailing_silence():
-    """Without it the VAD never sees the end of the last utterance."""
+    # without the padding the vad never notices the last sentence ended
     from interpreter.audio.capture import ArrayMicrophone
 
     microphone = ArrayMicrophone(tone(0.5), trailing_silence_ms=1000)

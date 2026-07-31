@@ -1,29 +1,26 @@
-"""Language table: ISO-639-1 codes, display names, and default voices.
-
-Kept deliberately small and dependency-free so the CLI wizard, the config
-validator and the provider layer can all share one source of truth.
-"""
-
-from __future__ import annotations
+# all the languages the app knows about.
+# I put them in one place so the setup wizard and the config checker
+# can both use the same list instead of me typing it twice
 
 from dataclasses import dataclass
 
-# OpenAI's gpt-4o-mini-tts voices are all multilingual, so the per-language
-# default here is about giving the two sides *distinguishable* voices rather
-# than about accent accuracy.
+# the openai voices. they all speak every language so it doesn't really
+# matter which one goes with which language, I just wanted the two people
+# to sound different from each other
 _DEFAULT_VOICES = ("alloy", "nova", "echo", "shimmer", "onyx", "sage")
 
 
 @dataclass(frozen=True)
 class Language:
-    code: str  # ISO-639-1
-    name: str  # English display name
-    native: str  # endonym, shown in the CLI wizard
-    voice: str  # default TTS voice
+    code: str      # like "en"
+    name: str      # like "English"
+    native: str    # what they call it themselves
+    voice: str     # which voice to use
 
 
-# Not exhaustive — any code Whisper supports will work if you add it here.
-LANGUAGES: dict[str, Language] = {
+# this isn't every language, just the ones I bothered to add.
+# whisper knows way more, you can just add a line here if you need one
+LANGUAGES = {
     lang.code: lang
     for lang in (
         Language("en", "English", "English", "alloy"),
@@ -60,8 +57,8 @@ LANGUAGES: dict[str, Language] = {
 }
 
 
-def get(code: str) -> Language:
-    """Look up a language, tolerating 'en-US' / 'EN' style input."""
+def get(code):
+    # people write "en-US" or "EN" so chop off the extra stuff first
     normalized = code.strip().lower().replace("_", "-").split("-")[0]
     if normalized not in LANGUAGES:
         raise KeyError(
@@ -71,7 +68,7 @@ def get(code: str) -> Language:
     return LANGUAGES[normalized]
 
 
-def is_known(code: str) -> bool:
+def is_known(code):
     try:
         get(code)
     except KeyError:
@@ -79,28 +76,28 @@ def is_known(code: str) -> bool:
     return True
 
 
-def name_of(code: str) -> str:
-    """Display name, falling back to the raw code for anything unlisted."""
+def name_of(code):
     try:
         return get(code).name
     except KeyError:
-        return code
+        return code  # just show the code if I never added that language
 
 
-def default_voice(code: str, taken: set[str] | None = None) -> str:
-    """Default voice for a language, avoiding voices already in use.
-
-    Two speakers sharing one voice is confusing in shared-speaker mode, so the
-    wizard passes the already-assigned voices in `taken`.
-    """
-    taken = taken or set()
+def default_voice(code, taken=None):
+    # "taken" is the voices already used. if both people get the same voice
+    # you can't tell who is talking, which I found out the annoying way
+    if taken is None:
+        taken = set()
     try:
         preferred = get(code).voice
     except KeyError:
         preferred = _DEFAULT_VOICES[0]
+
     if preferred not in taken:
         return preferred
+
+    # already used, grab any free one
     for candidate in _DEFAULT_VOICES:
         if candidate not in taken:
             return candidate
-    return preferred
+    return preferred  # ran out, whatever

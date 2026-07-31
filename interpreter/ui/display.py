@@ -1,10 +1,7 @@
-"""Live two-column transcript.
-
-Subscribes to the event bus and renders both sides of the conversation as it
-happens, with per-stage latency so you can see which stage to tune.
-"""
-
-from __future__ import annotations
+# the live two column transcript you see while its running
+#
+# listens to the event bus and redraws as stuff happens. shows the timings
+# too so you can see which part is slow
 
 from collections import deque
 from dataclasses import dataclass, field
@@ -15,9 +12,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..config import AppConfig
-from ..events import EventBus, PipelineEvent, Stage
+from ..events import Stage
 
+# little text icons instead of emoji, some terminals mangle emoji
 _STAGE_ICON = {
     Stage.CAPTURED: "..",
     Stage.TRANSCRIBED: "**",
@@ -31,34 +28,33 @@ _STAGE_ICON = {
 
 @dataclass
 class _Turn:
-    key: tuple[str, int]
-    source_lang: str | None = None
-    target_lang: str | None = None
+    key: tuple
+    source_lang: str = None
+    target_lang: str = None
     source_text: str = ""
     target_text: str = ""
     stage: Stage = Stage.CAPTURED
-    detail: str | None = None
-    timings: dict[str, float] = field(default_factory=dict)
+    detail: str = None
+    timings: dict = field(default_factory=dict)
 
     @property
-    def total_ms(self) -> float:
+    def total_ms(self):
         return sum(self.timings.values())
 
 
 class LiveTranscript:
-    """Renders turns into two language columns."""
-
-    def __init__(self, cfg: AppConfig, bus: EventBus, *, console: Console | None = None) -> None:
+    def __init__(self, cfg, bus, *, console=None):
         self.cfg = cfg
         self.bus = bus
         self.console = console or Console()
-        self._turns: dict[tuple[str, int], _Turn] = {}
-        self._order: deque[tuple[str, int]] = deque(maxlen=40)
+        self._turns = {}
+        self._order = deque(maxlen=40)
         self._status = "listening"
-        self._live: Live | None = None
+        self._live = None
         self._unsubscribe = None
 
-    def __enter__(self) -> LiveTranscript:
+    # these two make "with LiveTranscript(...)" work
+    def __enter__(self):
         self._unsubscribe = self.bus.subscribe(self._on_event)
         self._live = Live(
             self._render(),
@@ -69,27 +65,32 @@ class LiveTranscript:
         self._live.__enter__()
         return self
 
-    def __exit__(self, *exc_info) -> None:
+    def __exit__(self, *exc_info):
         if self._unsubscribe is not None:
             self._unsubscribe()
         if self._live is not None:
-            self._live.update(self._render())
+            self._live.update(self._render())  # one last draw
             self._live.__exit__(*exc_info)
 
-    def _on_event(self, event: PipelineEvent) -> None:
+    def _on_event(self, event):
         key = (event.channel_id, event.seq)
         turn = self._turns.get(key)
+
         if turn is None:
             turn = _Turn(key=key)
             self._turns[key] = turn
             self._order.append(key)
-            # Bound memory on a long conversation.
+            # the deque drops the oldest key on its own, so clean up any
+            # turns whose key isn't in it anymore. otherwise a long
+            # conversation slowly eats memory
             while len(self._turns) > self._order.maxlen:
                 stale = next(iter(self._turns))
                 if stale in self._order:
                     break
                 del self._turns[stale]
 
+        # "or turn.x" so a later event that doesn't carry a field doesn't
+        # wipe out what an earlier one already told us
         turn.stage = event.stage
         turn.detail = event.detail or turn.detail
         turn.source_lang = event.source_lang or turn.source_lang
@@ -114,6 +115,8 @@ class LiveTranscript:
         table.add_column(ratio=1)
         table.add_column(ratio=1)
 
+        # language A goes on the left, B on the right. I add a blank to the
+        # other side every time so the two lists stay the same length
         left, right = [], []
         for key in self._order:
             turn = self._turns.get(key)
@@ -122,6 +125,7 @@ class LiveTranscript:
             rendered = self._render_turn(turn)
             if rendered is None:
                 continue
+
             if turn.source_lang == self.cfg.language_a.code:
                 left.append(rendered)
                 right.append(Text(""))
@@ -129,7 +133,7 @@ class LiveTranscript:
                 left.append(Text(""))
                 right.append(rendered)
 
-        visible = 12
+        visible = 12  # only the last dozen fit on screen
         for row_left, row_right in zip(left[-visible:], right[-visible:]):
             table.add_row(row_left, row_right)
 
@@ -141,10 +145,7 @@ class LiveTranscript:
             Text(f" {self.cfg.language_b.name} ", style="bold magenta"),
         )
 
-        footer = Text(
-            f"  {self._status}    Ctrl-C to stop",
-            style="dim",
-        )
+        footer = Text(f"  {self._status}    Ctrl-C to stop", style="dim")
 
         return Panel(
             Group(header, Text(""), table, Text(""), footer),
@@ -152,7 +153,7 @@ class LiveTranscript:
             border_style="blue",
         )
 
-    def _render_turn(self, turn: _Turn) -> Text | None:
+    def _render_turn(self, turn):
         icon = _STAGE_ICON.get(turn.stage, "  ")
 
         if turn.stage is Stage.DROPPED:
@@ -160,45 +161,56 @@ class LiveTranscript:
         if turn.stage is Stage.ERROR:
             return Text(f"{icon} {turn.detail}", style="red")
         if not turn.source_text:
-            return None
+            return None  # nothing to show yet
 
         text = Text()
         text.append(f"{icon} ", style="dim")
         text.append(turn.source_text, style="white")
+
         if turn.target_text:
             text.append("\n   ")
-            style = "bold cyan" if turn.target_lang == self.cfg.language_a.code else "bold magenta"
+            if turn.target_lang == self.cfg.language_a.code:
+                style = "bold cyan"
+            else:
+                style = "bold magenta"
             text.append(turn.target_text, style=style)
+
         if turn.stage in {Stage.SPEAKING, Stage.DONE} and turn.timings:
             parts = " ".join(f"{k} {v:.0f}ms" for k, v in turn.timings.items())
             text.append(f"\n   {parts}  |  total {turn.total_ms:.0f}ms", style="dim")
+
         if turn.stage is Stage.DONE and turn.detail == "interrupted":
             text.append("  (interrupted)", style="yellow")
+
         return text
 
 
 class PlainLogger:
-    """Line-per-event output for `--no-live`, pipes and CI."""
+    # one line per event. for --no-live, or when you pipe the output
+    # somewhere, since the fancy version makes a mess in a log file
 
-    def __init__(self, cfg: AppConfig, bus: EventBus, *, console: Console | None = None) -> None:
+    def __init__(self, cfg, bus, *, console=None):
         self.cfg = cfg
         self.bus = bus
         self.console = console or Console()
         self._unsubscribe = None
 
-    def __enter__(self) -> PlainLogger:
+    def __enter__(self):
         self._unsubscribe = self.bus.subscribe(self._on_event)
         return self
 
-    def __exit__(self, *exc_info) -> None:
+    def __exit__(self, *exc_info):
         if self._unsubscribe is not None:
             self._unsubscribe()
 
-    def _on_event(self, event: PipelineEvent) -> None:
+    def _on_event(self, event):
         tag = f"[{event.channel_id}{event.seq}]"
+
+        # highlight=False or rich colors random numbers in the transcript
         if event.stage is Stage.TRANSCRIBED:
             self.console.print(
-                f"{tag} heard ({event.source_lang}): {event.source_text}", highlight=False
+                f"{tag} heard ({event.source_lang}): {event.source_text}",
+                highlight=False,
             )
         elif event.stage is Stage.SPEAKING:
             self.console.print(
@@ -207,6 +219,10 @@ class PlainLogger:
                 highlight=False,
             )
         elif event.stage is Stage.DROPPED:
-            self.console.print(f"{tag} dropped: {event.detail}", style="dim", highlight=False)
+            self.console.print(
+                f"{tag} dropped: {event.detail}", style="dim", highlight=False
+            )
         elif event.stage is Stage.ERROR:
-            self.console.print(f"{tag} error: {event.detail}", style="red", highlight=False)
+            self.console.print(
+                f"{tag} error: {event.detail}", style="red", highlight=False
+            )

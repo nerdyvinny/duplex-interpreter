@@ -1,6 +1,4 @@
-"""Command-line entry point."""
-
-from __future__ import annotations
+# the command line stuff
 
 import argparse
 import asyncio
@@ -30,13 +28,15 @@ from .display import LiveTranscript, PlainLogger
 console = Console()
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser():
     parser = argparse.ArgumentParser(
         prog="duplex-interpreter",
         description="Hands-free, two-way, real-time speech translation.",
     )
     parser.add_argument("-c", "--config", help="path to config.yaml")
-    parser.add_argument("--devices", action="store_true", help="list audio devices and exit")
+    parser.add_argument(
+        "--devices", action="store_true", help="list audio devices and exit"
+    )
     parser.add_argument("--setup", action="store_true", help="interactive setup wizard")
     parser.add_argument(
         "--selftest",
@@ -54,16 +54,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--loopback",
         type=float,
         nargs="?",
-        const=5.0,
+        const=5.0,  # bare --loopback means 5 seconds
         metavar="SECONDS",
         help="pipe the microphone straight to the speaker to check device wiring",
     )
-    parser.add_argument("--no-live", action="store_true", help="plain line output instead of the live view")
-    parser.add_argument("--verbose", "-v", action="count", default=0, help="repeat for more logging")
+    parser.add_argument(
+        "--no-live", action="store_true", help="plain line output instead of the live view"
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="count", default=0, help="repeat for more logging"
+    )
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     _force_utf8_output()
     args = build_parser().parse_args(argv)
     _configure_logging(args.verbose)
@@ -75,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_setup(args.config)
 
         cfg = config_module.load(args.config)
+
         if args.selftest:
             return asyncio.run(
                 _cmd_selftest(cfg, Path(args.selftest), realtime=args.realtime)
@@ -82,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.loopback is not None:
             return asyncio.run(_cmd_loopback(cfg, args.loopback))
         return asyncio.run(_cmd_run(cfg, live=not args.no_live))
+
+    # catching these here so the user gets a readable message instead of a
+    # wall of traceback. different exit codes so scripts can tell them apart
     except ConfigError as exc:
         console.print(f"[red]Configuration problem:[/red] {exc}")
         return 2
@@ -93,23 +101,19 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
-def _force_utf8_output() -> None:
-    """Make the console handle accented text.
-
-    A translation app prints Spanish, Greek and Japanese by definition, and
-    the legacy Windows console codepage mangles all of it into question
-    marks. Harmless everywhere else.
-    """
+def _force_utf8_output():
+    # this is a TRANSLATION app so it prints spanish and greek and japanese
+    # by definition, and the old windows console turns all of it into
+    # question marks. doesn't hurt anything on mac or linux
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError, OSError):
-            pass  # already redirected, or not a real stream
+            pass  # already redirected somewhere, or not a real terminal
 
 
-# Third-party loggers that would otherwise bury the conversation. Argos logs
-# every tokenized sentence at INFO; stanza warns about model packaging on
-# every call.
+# libraries that will bury the actual conversation if I let them.
+# argos logs every single sentence it tokenizes at INFO level
 _NOISY_LOGGERS = (
     "httpx",
     "httpcore",
@@ -124,25 +128,22 @@ _NOISY_LOGGERS = (
 
 
 class _QuietThirdParty(logging.Filter):
-    """Silence noisy libraries at the handler.
+    # just setting the level on those loggers is NOT enough. argostranslate
+    # calls setLevel(INFO) on its own logger when you import it, which
+    # happens after my setup runs, and a logger's own level beats the
+    # parent's. filtering at the handler catches it no matter what they do
 
-    Setting levels per logger is not enough: argostranslate calls
-    `setLevel(INFO)` on its own logger when it is imported, which is after
-    our configuration runs, and a logger's own level beats its parent's.
-    Filtering at the handler catches the records whatever the library does.
-    """
-
-    def __init__(self, threshold: int) -> None:
+    def __init__(self, threshold):
         super().__init__()
         self.threshold = threshold
 
-    def filter(self, record: logging.LogRecord) -> bool:
+    def filter(self, record):
         if record.name.startswith(_NOISY_LOGGERS):
             return record.levelno >= self.threshold
         return True
 
 
-def _configure_logging(verbosity: int) -> None:
+def _configure_logging(verbosity):
     level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
     logging.basicConfig(
         level=level,
@@ -150,19 +151,22 @@ def _configure_logging(verbosity: int) -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
-    # -vv means the user genuinely wants the library internals.
+    # -vv means you actually want to see the library internals
     if verbosity < 2:
-        third_party = logging.ERROR if verbosity == 0 else logging.WARNING
+        if verbosity == 0:
+            third_party = logging.ERROR
+        else:
+            third_party = logging.WARNING
         for handler in logging.getLogger().handlers:
             handler.addFilter(_QuietThirdParty(third_party))
 
 
-# --------------------------------------------------------------------------
+# ==========================================================================
 # --devices
-# --------------------------------------------------------------------------
+# ==========================================================================
 
 
-def _cmd_devices() -> int:
+def _cmd_devices():
     default_in, default_out = audio_devices.default_devices()
 
     for kind, entries, default in (
@@ -175,13 +179,14 @@ def _cmd_devices() -> int:
         table.add_column("API")
         table.add_column("Ch", justify="right")
         table.add_column("Rate", justify="right")
+
         for device in entries:
             marker = " (default)" if device.index == default else ""
-            channels = (
-                device.max_input_channels
-                if "Input" in kind
-                else device.max_output_channels
-            )
+            if "Input" in kind:
+                channels = device.max_input_channels
+            else:
+                channels = device.max_output_channels
+
             table.add_row(
                 str(device.index),
                 f"{device.name}{marker}",
@@ -189,22 +194,23 @@ def _cmd_devices() -> int:
                 str(channels),
                 f"{device.default_samplerate:.0f}",
             )
+
         console.print(table)
         console.print()
 
     console.print(
         "Put either the number or any part of the name in config.yaml, "
-        "e.g. [cyan]input_device: \"FHD Camera\"[/cyan]"
+        'e.g. [cyan]input_device: "FHD Camera"[/cyan]'
     )
     return 0
 
 
-# --------------------------------------------------------------------------
+# ==========================================================================
 # --setup
-# --------------------------------------------------------------------------
+# ==========================================================================
 
 
-def _cmd_setup(path: str | None) -> int:
+def _cmd_setup(path):
     console.print("[bold]duplex-interpreter setup[/bold]\n")
 
     mode = _ask_mode()
@@ -219,17 +225,21 @@ def _cmd_setup(path: str | None) -> int:
         channels=channels,
         providers=providers,
     )
-    cfg = config_module.from_dict(config_module.to_dict(cfg))  # validate the round trip
+    # round trip it through the loader so I find out NOW if the answers
+    # make an invalid config, not later when they try to run it
+    cfg = config_module.from_dict(config_module.to_dict(cfg))
 
     target = Path(path or "config.yaml")
-    if target.exists() and not Confirm.ask(f"\n{target} exists. Overwrite?", default=False):
-        console.print("left unchanged")
-        return 0
+    if target.exists():
+        if not Confirm.ask(f"\n{target} exists. Overwrite?", default=False):
+            console.print("left unchanged")
+            return 0
 
     config_module.save(cfg, target)
     console.print(f"\n[green]Wrote {target}[/green]")
 
-    if providers.stt == "openai" or providers.translation == "openai" or providers.tts == "openai":
+    uses_openai = "openai" in (providers.stt, providers.translation, providers.tts)
+    if uses_openai:
         import os
 
         if not os.environ.get("OPENAI_API_KEY"):
@@ -243,40 +253,47 @@ def _cmd_setup(path: str | None) -> int:
     return 0
 
 
-def _ask_mode() -> Mode:
+def _ask_mode():
     console.print("How are the two people miked?\n")
     console.print("  [cyan]1[/cyan]  One shared microphone and speaker")
     console.print("     Hands-free, no buttons. The app detects which language was")
     console.print("     spoken and routes it. Works with any laptop.")
-    console.print("     [dim]Genuinely overlapping speech degrades — one mic can't")
-    console.print("     separate two voices.[/dim]\n")
+    console.print("     [dim]If you both talk at the exact same time it gets")
+    console.print("     confused, one mic can't separate two voices.[/dim]\n")
     console.print("  [cyan]2[/cyan]  A headset each (two mics, two earpieces)")
-    console.print("     True full duplex: both can talk at once, no echo, and each")
-    console.print("     person's language is pinned so nothing is guessed.\n")
+    console.print("     Both can talk at once, no echo, and each person's language")
+    console.print("     is pinned so nothing is guessed.\n")
+
     choice = Prompt.ask("Choose", choices=["1", "2"], default="1")
-    return Mode.SINGLE_MIC if choice == "1" else Mode.DUAL_MIC
+    if choice == "1":
+        return Mode.SINGLE_MIC
+    return Mode.DUAL_MIC
 
 
-def _ask_languages() -> tuple[config_module.LanguageSlot, config_module.LanguageSlot]:
+def _ask_languages():
     console.print("\n[bold]Languages[/bold]")
     known = ", ".join(sorted(languages.LANGUAGES))
     console.print(f"[dim]{known}[/dim]\n")
 
     code_a = _ask_language("Language A", "en")
-    code_b = _ask_language("Language B", "es" if code_a != "es" else "en")
+    # don't suggest the same one they just picked
+    default_b = "es" if code_a != "es" else "en"
+
+    code_b = _ask_language("Language B", default_b)
     while code_b == code_a:
         console.print("[yellow]The two languages must differ.[/yellow]")
-        code_b = _ask_language("Language B", "es" if code_a != "es" else "en")
+        code_b = _ask_language("Language B", default_b)
 
     voice_a = languages.default_voice(code_a)
     voice_b = languages.default_voice(code_b, {voice_a})
+
     return (
         config_module.LanguageSlot(code_a, languages.name_of(code_a), voice_a),
         config_module.LanguageSlot(code_b, languages.name_of(code_b), voice_b),
     )
 
 
-def _ask_language(label: str, default: str) -> str:
+def _ask_language(label, default):
     while True:
         value = Prompt.ask(label, default=default).strip().lower()
         if languages.is_known(value):
@@ -284,18 +301,17 @@ def _ask_language(label: str, default: str) -> str:
         console.print(f"[yellow]{value!r} is not in the language table.[/yellow]")
 
 
-def _ask_channels(
-    mode: Mode,
-    language_a: config_module.LanguageSlot,
-    language_b: config_module.LanguageSlot,
-) -> list[ChannelConfig]:
+def _ask_channels(mode, language_a, language_b):
     try:
         inputs = audio_devices.input_devices()
         outputs = audio_devices.output_devices()
     except audio_devices.AudioDeviceError as exc:
-        console.print(f"[yellow]Could not list audio devices ({exc}); using defaults.[/yellow]")
+        console.print(
+            f"[yellow]Could not list audio devices ({exc}); using defaults.[/yellow]"
+        )
         inputs = outputs = []
 
+    # no devices to pick from, just use the system defaults
     if not inputs or not outputs:
         if mode is Mode.SINGLE_MIC:
             return [ChannelConfig(id="A", language="auto")]
@@ -329,6 +345,7 @@ def _ask_channels(
         output_device=_ask_device("  earpiece", outputs),
         language=language_a.code,
     )
+
     console.print(f"\n[magenta]{language_b.name} speaker's headset:[/magenta]")
     channel_b = ChannelConfig(
         id="B",
@@ -336,18 +353,23 @@ def _ask_channels(
         output_device=_ask_device("  earpiece", outputs),
         language=language_b.code,
     )
-    if channel_a.input_device is not None and channel_a.input_device == channel_b.input_device:
-        console.print(
-            "\n[yellow]Both channels use the same microphone. Each person needs "
-            "their own, or both pipelines will hear both speakers.[/yellow]"
-        )
+
+    if channel_a.input_device is not None:
+        if channel_a.input_device == channel_b.input_device:
+            console.print(
+                "\n[yellow]Both channels use the same microphone. Each person "
+                "needs their own, or both pipelines will hear both speakers.[/yellow]"
+            )
+
     return [channel_a, channel_b]
 
 
-def _ask_device(label: str, options) -> int | None:
+def _ask_device(label, options):
     valid = {str(d.index) for d in options}
     while True:
-        answer = Prompt.ask(f"{label} (number, or blank for default)", default="").strip()
+        answer = Prompt.ask(
+            f"{label} (number, or blank for default)", default=""
+        ).strip()
         if not answer:
             return None
         if answer in valid:
@@ -355,11 +377,12 @@ def _ask_device(label: str, options) -> int | None:
         console.print(f"[yellow]{answer!r} is not one of the numbers listed.[/yellow]")
 
 
-def _ask_providers() -> config_module.ProvidersConfig:
+def _ask_providers():
     console.print("\n[bold]Translation engine[/bold]\n")
-    console.print("  [cyan]1[/cyan]  OpenAI  — one API key, ~0.8s, roughly $0.03/minute")
-    console.print("  [cyan]2[/cyan]  Local   — free and offline, ~1-2s, multi-GB downloads")
-    console.print("  [cyan]3[/cyan]  Mixed   — local speech recognition, OpenAI translation + voice\n")
+    console.print("  [cyan]1[/cyan]  OpenAI  - one API key, ~0.8s, roughly $0.03/minute")
+    console.print("  [cyan]2[/cyan]  Local   - free and offline, ~1-2s, big downloads")
+    console.print("  [cyan]3[/cyan]  Mixed   - local speech recognition, OpenAI translation + voice\n")
+
     choice = Prompt.ask("Choose", choices=["1", "2", "3"], default="1")
 
     if choice == "2":
@@ -373,12 +396,12 @@ def _ask_providers() -> config_module.ProvidersConfig:
     return config_module.ProvidersConfig()
 
 
-# --------------------------------------------------------------------------
+# ==========================================================================
 # --selftest
-# --------------------------------------------------------------------------
+# ==========================================================================
 
 
-async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = False) -> int:
+async def _cmd_selftest(cfg, wav_path, *, realtime=False):
     if not wav_path.exists():
         console.print(f"[red]No such file:[/red] {wav_path}")
         return 4
@@ -391,9 +414,14 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = Fals
         f"[bold]Self-test[/bold]  {wav_path.name}  "
         f"({pcm.size / PIPELINE_SAMPLE_RATE:.1f}s, {rate} Hz)\n"
     )
+
     providers = cfg.providers
     local_stt = providers.stt in {"faster-whisper", "faster_whisper", "local"}
-    stt_model = providers.local_whisper_size if local_stt else providers.stt_model
+    if local_stt:
+        stt_model = providers.local_whisper_size
+    else:
+        stt_model = providers.stt_model
+
     console.print(f"  stt         {providers.stt} ({stt_model})")
     console.print(
         f"  translation {providers.translation}"
@@ -416,16 +444,20 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = Fals
     )
 
     bus = EventBus()
-    speakers: dict[str, RecordingSpeaker] = {}
+    speakers = {}
 
-    def make_speaker(channel: ChannelConfig) -> RecordingSpeaker:
+    def make_speaker(channel):
         speaker = RecordingSpeaker(channel_id=channel.id)
         speakers[channel.id] = speaker
         return speaker
 
-    # The whole file goes into the first channel; a WAV has only one speaker.
-    def make_microphone(channel: ChannelConfig):
-        audio = pcm if channel.id == cfg.channels[0].id else np.zeros(0, dtype=np.int16)
+    def make_microphone(channel):
+        # the whole file goes to the first channel, a wav only has one
+        # person in it. the other channel gets silence
+        if channel.id == cfg.channels[0].id:
+            audio = pcm
+        else:
+            audio = np.zeros(0, dtype=np.int16)
         return ArrayMicrophone(audio, channel_id=channel.id, realtime=realtime)
 
     orchestrator = Orchestrator(
@@ -451,12 +483,14 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = Fals
     dropped = [e for e in history if e.stage is Stage.DROPPED]
 
     console.print()
+
     if not captured:
         console.print(
-            "[yellow]The VAD never triggered.[/yellow] Either the file has no speech, "
-            "or the threshold is too high. Try `vad.threshold: 0.3`."
+            "[yellow]The VAD never triggered.[/yellow] Either the file has no "
+            "speech, or the threshold is too high. Try `vad.threshold: 0.3`."
         )
         return 5
+
     if not spoke and not errors:
         console.print(
             f"[yellow]Segmented {len(captured)} utterance(s), but none produced "
@@ -475,18 +509,24 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = Fals
     for event in errors:
         console.print(f"[red]error:[/red] {event.detail}")
 
+    # write out the audio so you can actually listen to it
     written = 0
     for channel_id, speaker in speakers.items():
         audio = speaker.pcm()
         if audio.size == 0:
             continue
+
         out_path = Path(f"selftest_out_{channel_id}.wav")
         with wave.open(str(out_path), "wb") as handle:
             handle.setnchannels(1)
             handle.setsampwidth(2)
             handle.setframerate(speaker.sample_rate)
             handle.writeframes(audio.tobytes())
-        console.print(f"[green]wrote {out_path}[/green] ({audio.size / speaker.sample_rate:.1f}s)")
+
+        console.print(
+            f"[green]wrote {out_path}[/green] "
+            f"({audio.size / speaker.sample_rate:.1f}s)"
+        )
         written += 1
 
     if errors:
@@ -494,15 +534,16 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = Fals
     return 0 if written else 5
 
 
-# --------------------------------------------------------------------------
+# ==========================================================================
 # --loopback
-# --------------------------------------------------------------------------
+# ==========================================================================
+
+# 60ms. you can't hear it but it stops the speaker from starving every
+# time the scheduler hiccups
+_LOOPBACK_PREBUFFER_FRAMES = 3
 
 
-_LOOPBACK_PREBUFFER_FRAMES = 3  # 60 ms — inaudible, but absorbs scheduling jitter
-
-
-async def _cmd_loopback(cfg: AppConfig, seconds: float) -> int:
+async def _cmd_loopback(cfg, seconds):
     from ..audio.capture import MicrophoneStream
     from ..audio.playback import SpeakerStream
 
@@ -512,27 +553,27 @@ async def _cmd_loopback(cfg: AppConfig, seconds: float) -> int:
 
     speaker.start()
     microphone.start()
+
     console.print(
         f"[bold]Loopback[/bold] for {seconds:.0f}s\n"
         f"  in  {microphone.description}\n"
         f"  out {speaker.description}\n\n"
-        "[yellow]Wear headphones — speakers will feed back.[/yellow]\n"
+        "[yellow]Wear headphones, speakers will feed back.[/yellow]\n"
         "Talk; you should hear yourself."
     )
 
-    async def _pump() -> None:
-        # One `play()` for the whole run, not one per frame. `play()` ends by
-        # draining the ring buffer dry and waiting for the device to catch up,
-        # which costs more than the 20 ms of audio it was handed — per-frame it
-        # ran at a third of real time, so the capture queue grew until it hit
-        # its cap and started dropping. A single call also keeps a single
-        # resampler, whose filter state is what stops the frame boundaries
-        # turning into clicks.
+    async def _pump():
+        # ONE play() for the whole run, not one per frame.
+        #
+        # I had this calling play() on every 20ms frame and it was awful.
+        # play() finishes by draining the buffer all the way down and
+        # waiting for the device, which takes longer than the 20ms of audio
+        # you just gave it, so it ran at about a third of real time and the
+        # mic queue filled up and started dropping. one call also means one
+        # resampler instead of a new one per frame, which is what was
+        # making it click at every boundary
         async def _stream():
-            # Hold back a few frames before the first hand-off, so ordinary
-            # scheduling jitter doesn't starve the device and report itself as
-            # an underrun in the summary below.
-            prebuffer: list[bytes] = []
+            prebuffer = []
             async for frame in microphone.frames():
                 if len(prebuffer) < _LOOPBACK_PREBUFFER_FRAMES:
                     prebuffer.append(frame.tobytes())
@@ -541,13 +582,15 @@ async def _cmd_loopback(cfg: AppConfig, seconds: float) -> int:
                     yield b"".join(prebuffer)
                     prebuffer.clear()
                 yield frame.tobytes()
-            if prebuffer:  # stopped before the prebuffer even filled
-                yield b"".join(prebuffer)
+            if prebuffer:
+                yield b"".join(prebuffer)  # stopped before it even filled
 
         await speaker.play(_stream(), source_rate=PIPELINE_SAMPLE_RATE)
 
     task = asyncio.create_task(_pump())
     try:
+        # shield so the timeout doesn't cancel it half way through a write,
+        # I cancel it myself below
         await asyncio.wait_for(asyncio.shield(task), timeout=seconds)
     except (TimeoutError, asyncio.TimeoutError):
         pass
@@ -563,18 +606,18 @@ async def _cmd_loopback(cfg: AppConfig, seconds: float) -> int:
     )
     if stats["overflows"] > 5:
         console.print(
-            "[yellow]Frequent overflows — this device may not keep up. "
+            "[yellow]Frequent overflows - this device may not keep up. "
             "Try a different input.[/yellow]"
         )
     return 0
 
 
-# --------------------------------------------------------------------------
-# default: run the conversation
-# --------------------------------------------------------------------------
+# ==========================================================================
+# the normal thing: run the conversation
+# ==========================================================================
 
 
-async def _cmd_run(cfg: AppConfig, *, live: bool) -> int:
+async def _cmd_run(cfg, *, live):
     _preflight(cfg)
 
     bus = EventBus()
@@ -588,7 +631,11 @@ async def _cmd_run(cfg: AppConfig, *, live: bool) -> int:
     loop = asyncio.get_running_loop()
     _install_stop_handler(loop, orchestrator)
 
-    presenter = LiveTranscript(cfg, bus, console=console) if live else PlainLogger(cfg, bus, console=console)
+    if live:
+        presenter = LiveTranscript(cfg, bus, console=console)
+    else:
+        presenter = PlainLogger(cfg, bus, console=console)
+
     try:
         with presenter:
             await orchestrator.start()
@@ -603,12 +650,10 @@ async def _cmd_run(cfg: AppConfig, *, live: bool) -> int:
     return 0
 
 
-def _preflight(cfg: AppConfig) -> None:
-    """Warn about a room where the microphone can hear the speaker.
-
-    Provider credentials are checked by `Orchestrator.build()`, which covers
-    the self-test path too.
-    """
+def _preflight(cfg):
+    # warn if the mic can probably hear the speaker.
+    # the api keys get checked by Orchestrator.build() instead, so that the
+    # selftest path gets checked too
     if cfg.mode is Mode.SINGLE_MIC and cfg.duplex.shared_audio:
         channel = cfg.channels[0]
         try:
@@ -617,7 +662,8 @@ def _preflight(cfg: AppConfig) -> None:
                 audio_devices.resolve(channel.output_device, kind="output"),
             )
         except audio_devices.AudioDeviceError:
-            shares = True
+            shares = True  # couldn't tell, assume the worse case
+
         if shares:
             console.print(
                 "[yellow]Heads up:[/yellow] the microphone can probably hear the "
@@ -625,19 +671,20 @@ def _preflight(cfg: AppConfig) -> None:
             )
 
 
-def _install_stop_handler(loop: asyncio.AbstractEventLoop, orchestrator: Orchestrator) -> None:
-    """Ctrl-C stops cleanly. Windows has no loop.add_signal_handler."""
-
-    def _handler(signum, frame) -> None:  # noqa: ANN001, ARG001
+def _install_stop_handler(loop, orchestrator):
+    # ctrl-c should stop it cleanly.
+    # windows doesn't have loop.add_signal_handler so I use the plain
+    # signal module and bounce back onto the loop
+    def _handler(signum, frame):
         loop.call_soon_threadsafe(orchestrator.stop)
 
     try:
         signal.signal(signal.SIGINT, _handler)
     except (ValueError, OSError):
-        pass  # not on the main thread; KeyboardInterrupt still works
+        pass  # not the main thread. KeyboardInterrupt still works anyway
 
 
-def _print_summary(orchestrator: Orchestrator, bus: EventBus) -> None:
+def _print_summary(orchestrator, bus):
     history = bus.history
     spoken = [e for e in history if e.stage is Stage.DONE]
     dropped = [e for e in history if e.stage is Stage.DROPPED]
@@ -647,6 +694,7 @@ def _print_summary(orchestrator: Orchestrator, bus: EventBus) -> None:
         f"\n[bold]{len(spoken)}[/bold] translated, "
         f"{len(dropped)} dropped, {len(errors)} failed"
     )
+
     if spoken:
         latencies = sorted(e.total_ms for e in spoken)
         median = latencies[len(latencies) // 2]
@@ -654,9 +702,12 @@ def _print_summary(orchestrator: Orchestrator, bus: EventBus) -> None:
             f"latency: median {median:.0f}ms, "
             f"best {latencies[0]:.0f}ms, worst {latencies[-1]:.0f}ms"
         )
+
     for channel_id, stats in orchestrator.stats().items():
+        # only show the counters that aren't zero, otherwise its noise
         interesting = {k: v for k, v in stats.items() if v}
         if interesting:
             console.print(f"[dim]channel {channel_id}: {interesting}[/dim]")
+
     for event in errors[-3:]:
         console.print(f"[red]{event.detail}[/red]")

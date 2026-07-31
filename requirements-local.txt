@@ -1,21 +1,20 @@
-# duplex-interpreter — fully local / offline extras
-# Install on top of requirements.txt:
+# extra stuff for running it completely offline.
+# install on top of the normal ones:
 #   pip install -r requirements.txt -r requirements-local.txt
 #
-# These pull multi-GB models on first run. See README "Running fully offline".
+# warning: these download multi GB models the first time
 
-# --- local STT ---
-faster-whisper>=1.1.0     # CTranslate2 Whisper. GPU needs a CUDA-matched ctranslate2;
-                          # CPU int8 with model_size=small is still near real-time.
+# local speech recognition
+faster-whisper>=1.1.0     # whisper but through ctranslate2, way faster.
+                          # "small" on cpu int8 is still nearly real time
 
-# --- local MT ---
-argostranslate>=1.9       # per-pair models ~100 MB, CPU only
+# local translating
+argostranslate>=1.9       # about 100mb per language pair, cpu only
 
-# --- local TTS ---
-piper-tts>=1.2            # ONNX voices ~60 MB each, RTF ~0.05
+# local voices
+piper-tts>=1.2            # about 60mb per voice and its really fast
 
-# --- local stack extras, see README "Running fully offline" ---
-# Windows GPU: CTranslate2 needs the CUDA math libraries; without these it
-# fails with "Library cublas64_12.dll is not found" on a perfectly good card.
+# windows + nvidia gpu only. without these ctranslate2 fails with
+# "Library cublas64_12.dll is not found" on a completely fine graphics card
 nvidia-cublas-cu12; platform_system == "Windows"
 nvidia-cudnn-cu12; platform_system == "Windows"

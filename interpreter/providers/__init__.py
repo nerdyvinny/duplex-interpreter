@@ -1,4 +1,4 @@
-"""Swappable STT / translation / TTS providers."""
+# the swappable speech-to-text / translate / text-to-speech backends
 
 from .base import (
     ProviderError,

@@ -1,19 +1,16 @@
-"""Speaker output: a ring buffer the PortAudio callback drains.
-
-TTS chunks are pushed in as they arrive from the network, so audio starts
-playing on the first chunk instead of after synthesis completes. That is worth
-a few hundred milliseconds per utterance.
-
-`stop()` clears the buffer immediately, which is what makes barge-in possible.
-"""
-
-from __future__ import annotations
+# speaker output
+#
+# there is a buffer that portaudio pulls from on its own thread. I push the
+# TTS audio in as it arrives from the network instead of waiting for the
+# whole thing, so it starts talking on the first chunk. saves a few hundred
+# ms per sentence which is a lot when you're waiting for a translation.
+#
+# stop() empties the buffer instantly, thats what makes interrupting work
 
 import asyncio
 import logging
 import threading
 from collections import deque
-from collections.abc import AsyncIterator
 
 import numpy as np
 
@@ -24,43 +21,42 @@ log = logging.getLogger(__name__)
 
 
 class SpeakerStream:
-    """One output device, fed by an in-memory ring buffer."""
+    acoustic = True  # makes real sound so a mic in the room will hear it
 
-    # Makes actual sound, so a microphone in the same room can hear it.
-    acoustic = True
-
-    def __init__(self, device: str | int | None = None, *, channel_id: str = "A") -> None:
+    def __init__(self, device=None, *, channel_id="A"):
         self.channel_id = channel_id
         self.device_index = devices.resolve(device, kind="output")
 
+        # a real threading lock, not asyncio, because the portaudio thread
+        # touches this buffer too
         self._lock = threading.Lock()
-        self._buffer: deque[np.ndarray] = deque()
+        self._buffer = deque()
         self._buffered_samples = 0
-        self._generation = 0  # bumped by stop() to cancel in-flight feeds
+        self._generation = 0  # stop() bumps this to cancel whatever is playing
         self._stream = None
         self._device_rate = 24_000
         self._device_channels = 1
         self._underruns = 0
-        # Number of `play()` calls that have started feeding but not finished.
-        # Outside that window an empty buffer just means nobody is talking.
-        self._feeding = 0
         self._idle = threading.Event()
         self._idle.set()
+        # how many play() calls are currently feeding. outside of that an
+        # empty buffer just means nobody is talking, not a problem
+        self._feeding = 0
 
     @property
-    def description(self) -> str:
+    def description(self):
         return devices.describe(self.device_index, "output")
 
     @property
-    def sample_rate(self) -> int:
+    def sample_rate(self):
         return self._device_rate
 
-    def start(self) -> None:
+    def start(self):
         sd = devices._sounddevice()
         self._device_rate, self._device_channels = self._negotiate_format(sd)
         self._stream = sd.RawOutputStream(
             samplerate=self._device_rate,
-            blocksize=0,  # let PortAudio choose; lowest latency it can manage
+            blocksize=0,  # 0 lets portaudio pick, it goes as low as it can
             device=self.device_index,
             channels=self._device_channels,
             dtype="int16",
@@ -75,12 +71,13 @@ class SpeakerStream:
             self._device_channels,
         )
 
-    def _negotiate_format(self, sd) -> tuple[int, int]:
+    def _negotiate_format(self, sd):
         info = sd.query_devices(self.device_index, "output")
         native_rate = int(info["default_samplerate"])
         max_channels = max(1, int(info["max_output_channels"]))
-        # 24 kHz first: it is what gpt-4o-mini-tts emits, so the common case
-        # needs no resampling at all.
+
+        # 24000 first because thats what openai's tts gives me, so the
+        # normal case needs no resampling at all
         for rate in (24_000, native_rate, 48_000, 44_100):
             for channels in (1, min(2, max_channels)):
                 if channels > max_channels:
@@ -92,16 +89,18 @@ class SpeakerStream:
                         channels=channels,
                         dtype="int16",
                     )
-                except Exception:  # noqa: BLE001 - probing
+                except Exception:
                     continue
                 return rate, channels
+
         raise devices.AudioDeviceError(
             f"{self.description} rejected every sample rate we tried. "
             "Pick a different output device."
         )
 
-    def _callback(self, outdata, frames, time_info, status) -> None:  # noqa: ANN001
-        """PortAudio realtime thread. Never blocks; pads with silence."""
+    def _callback(self, outdata, frames, time_info, status):
+        # AUDIO THREAD. never block in here. if there isn't enough audio
+        # just leave the rest as zeros, which is silence
         needed = frames * self._device_channels
         chunk = np.zeros(needed, dtype=np.int16)
         filled = 0
@@ -112,45 +111,40 @@ class SpeakerStream:
                 take = min(head.size, needed - filled)
                 chunk[filled : filled + take] = head[:take]
                 filled += take
+
                 if take == head.size:
-                    self._buffer.popleft()
+                    self._buffer.popleft()  # used the whole thing
                 else:
-                    self._buffer[0] = head[take:]
+                    self._buffer[0] = head[take:]  # save the rest
                 self._buffered_samples -= take
+
             if not self._buffer:
                 self._idle.set()
 
-        # An underrun is only meaningful while a `play()` is mid-stream: the
-        # device wanted audio, more was coming, and it had not arrived. An
-        # empty buffer the rest of the time is just an idle speaker — which is
-        # most callbacks in a conversation, and counting those reported
-        # thousands of underruns for a completely clean run.
+        # only counts as an underrun if a play() was actually mid stream,
+        # meaning more audio WAS coming and it didn't get here in time.
+        # an empty buffer any other time is just nobody talking, which is
+        # most of a conversation. my first version counted those and
+        # reported like 4000 underruns on a totally fine run
         if filled < needed and self._feeding:
             self._underruns += 1
+
         outdata[:] = chunk.tobytes()
 
-    def _enqueue(self, pcm: np.ndarray) -> None:
+    def _enqueue(self, pcm):
         if pcm.size == 0:
             return
         if self._device_channels > 1:
+            # np.repeat turns [a, b] into [a, a, b, b] which is exactly the
+            # LRLR layout stereo wants
             pcm = np.repeat(pcm, self._device_channels)
         with self._lock:
             self._buffer.append(pcm)
             self._buffered_samples += pcm.size
             self._idle.clear()
 
-    async def play(
-        self,
-        chunks: AsyncIterator[bytes],
-        *,
-        source_rate: int,
-        on_first_audio=None,
-    ) -> bool:
-        """Stream TTS bytes to the speaker.
-
-        Returns False if `stop()` interrupted this playback, True if it ran to
-        completion.
-        """
+    async def play(self, chunks, *, source_rate, on_first_audio=None):
+        # returns False if stop() cut us off, True if it finished normally
         generation = self._generation
         resampler = StreamResampler(source_rate, self._device_rate)
         first = True
@@ -158,16 +152,18 @@ class SpeakerStream:
         try:
             async for raw in chunks:
                 if self._generation != generation:
-                    return False  # barged in on
+                    return False  # somebody barged in on us
                 if not raw:
                     continue
+
                 pcm = np.frombuffer(raw, dtype=np.int16)
                 self._enqueue(resampler.process(pcm))
+
                 if first:
                     first = False
-                    # Only now is the device genuinely owed audio. Counting
-                    # from the top of `play()` would blame the wait for the
-                    # first chunk — network latency, not an underrun.
+                    # only NOW does the device actually expect audio. if I
+                    # counted from the top of play() then waiting for the
+                    # first chunk to download would look like an underrun
                     self._feeding += 1
                     if on_first_audio is not None:
                         on_first_audio()
@@ -175,6 +171,7 @@ class SpeakerStream:
             if not first:
                 self._feeding -= 1
 
+        # the resampler holds a few samples back, get them out
         tail = resampler.process(np.zeros(0, dtype=np.int16), last=True)
         if tail.size:
             self._enqueue(tail)
@@ -182,21 +179,27 @@ class SpeakerStream:
         await self.drain(generation)
         return self._generation == generation
 
-    async def drain(self, generation: int | None = None) -> None:
-        """Wait until the buffer empties (or playback is cancelled)."""
+    async def drain(self, generation=None):
+        # wait until the buffer is empty
         while True:
             if generation is not None and self._generation != generation:
-                return
+                return  # cancelled, don't bother
+
             with self._lock:
                 remaining = self._buffered_samples
+
             if remaining <= 0:
-                # Give the device a beat to actually emit the last block.
+                # give the device a moment to actually push out the last bit
                 await asyncio.sleep(0.02)
                 return
-            await asyncio.sleep(min(0.05, max(0.005, remaining / self._device_rate / 2)))
 
-    def stop(self) -> None:
-        """Drop everything queued. Any in-flight `play()` returns False."""
+            # sleep for roughly half of whats left, but keep it sane
+            await asyncio.sleep(
+                min(0.05, max(0.005, remaining / self._device_rate / 2))
+            )
+
+    def stop(self):
+        # dump everything. any play() that is running returns False
         with self._lock:
             self._generation += 1
             self._buffer.clear()
@@ -204,99 +207,94 @@ class SpeakerStream:
             self._idle.set()
 
     @property
-    def is_playing(self) -> bool:
+    def is_playing(self):
         with self._lock:
             return self._buffered_samples > 0
 
-    def close(self) -> None:
+    def close(self):
         self.stop()
         if self._stream is not None:
             try:
                 self._stream.stop()
                 self._stream.close()
-            except Exception:  # noqa: BLE001 - teardown
+            except Exception:
                 log.debug("error closing output stream", exc_info=True)
             self._stream = None
 
     @property
-    def stats(self) -> dict[str, int]:
+    def stats(self):
         return {"underruns": self._underruns}
 
 
 class RecordingSpeaker:
-    """Collects PCM instead of playing it.
+    # saves the audio instead of playing it. --selftest uses this to write
+    # a wav you can listen to, and the tests use it to check the order
+    # things played in without needing a sound card
 
-    Used by `--selftest` (writes a WAV you can listen to) and by the offline
-    tests, so playback ordering can be asserted without audio hardware.
-    """
+    acoustic = False  # silent, so no microphone can ever pick it up
 
-    # Silent by construction, so it can never be picked up by a microphone.
-    acoustic = False
-
-    def __init__(self, *, channel_id: str = "A", sample_rate: int = 24_000) -> None:
+    def __init__(self, *, channel_id="A", sample_rate=24_000):
         self.channel_id = channel_id
         self._device_rate = sample_rate
         self._generation = 0
-        self.chunks: list[np.ndarray] = []
-        self.played_order: list[str] = []
+        self.chunks = []
+        self.played_order = []
 
     @property
-    def description(self) -> str:
+    def description(self):
         return "recording buffer"
 
     @property
-    def sample_rate(self) -> int:
+    def sample_rate(self):
         return self._device_rate
 
-    def start(self) -> None:
-        return None
+    def start(self):
+        pass
 
-    async def play(
-        self,
-        chunks: AsyncIterator[bytes],
-        *,
-        source_rate: int,
-        on_first_audio=None,
-    ) -> bool:
+    async def play(self, chunks, *, source_rate, on_first_audio=None):
         generation = self._generation
         resampler = StreamResampler(source_rate, self._device_rate)
         first = True
+
         async for raw in chunks:
             if self._generation != generation:
                 return False
             if not raw:
                 continue
-            self.chunks.append(resampler.process(np.frombuffer(raw, dtype=np.int16)))
+
+            self.chunks.append(
+                resampler.process(np.frombuffer(raw, dtype=np.int16))
+            )
             if first:
                 first = False
                 if on_first_audio is not None:
                     on_first_audio()
 
-        # The resampler holds back a filter's worth of samples. On a short
-        # utterance that can be the entire thing, so always flush the tail.
+        # always flush. on a short sentence the leftover in the resampler
+        # can literally be the entire thing
         tail = resampler.process(np.zeros(0, dtype=np.int16), last=True)
         if tail.size:
             self.chunks.append(tail)
         return True
 
-    async def drain(self, generation: int | None = None) -> None:
-        return None
+    async def drain(self, generation=None):
+        pass
 
-    def stop(self) -> None:
+    def stop(self):
         self._generation += 1
 
     @property
-    def is_playing(self) -> bool:
+    def is_playing(self):
         return False
 
-    def close(self) -> None:
-        return None
+    def close(self):
+        pass
 
     @property
-    def stats(self) -> dict[str, int]:
+    def stats(self):
         return {"underruns": 0}
 
-    def pcm(self) -> np.ndarray:
+    def pcm(self):
         if not self.chunks:
             return np.zeros(0, dtype=np.int16)
         return np.concatenate(self.chunks)

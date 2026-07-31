@@ -1,119 +1,107 @@
 # duplex-interpreter
 
-Two people, two languages, one conversation. No buttons, no turn-taking, no waiting.
+Two people who don't speak the same language, talking to each other, with no buttons to press.
 
-You say *"hello"*, they hear *"hola"*. They say *"hola"*, you hear *"hello"*. Nobody
-touches anything. With a headset each, you can both talk at the same time and both
-translations play at once — which is fine, because you're each listening in a different
-language.
+You say "hello", they hear "hola". They say "hola", you hear "hello". Nobody taps anything.
 
-That last part is the difference from Google Translate's conversation mode, which is
-turn-based and needs a tap between every utterance.
+I built this because every translation app I tried makes you hold a button or tap between
+every single sentence, which completely kills the flow of an actual conversation. I wanted
+one you could just leave running on the table.
 
 ```
-mic --> capture --> VAD --> STT --> translate --> TTS --> playback --> speaker
-        (thread)   ------------- per-channel pipeline -------------
+mic -> capture -> VAD -> speech to text -> translate -> voice -> speaker
 ```
 
-Each person gets their own pipeline, running concurrently. That's what makes it
-simultaneous rather than merely fast.
+Each person gets their own copy of that chain running at the same time, which is the part
+that makes it feel like a conversation instead of a walkie talkie.
 
----
+## Read this part first
 
-## Read this before anything else
+**"both people talk at once" only really works if you each have your own microphone.**
 
-**"Both people talk at once" is only fully solvable when each person has their own
-microphone.**
+One mic mixes both voices into one waveform, and pulling two overlapping people back
+apart in real time is genuinely an unsolved problem. Every speech recognizer I tried
+returns garbage on properly overlapped speech. So there are two modes:
 
-One microphone sums both voices into a single waveform. Pulling two overlapping speakers
-back out of one channel in real time is an unsolved research problem — every speech
-recognizer returns garbage on genuinely overlapped speech. Anyone telling you otherwise
-is selling something.
+|                      | single_mic                | dual_mic              |
+| -------------------- | ------------------------- | --------------------- |
+| hardware             | any laptop                | a headset each        |
+| hands free           | yes                       | yes                   |
+| talking at once      | whoever is louder wins    | actually works        |
+| who spoke?           | it has to guess           | it knows              |
+| echo                 | handled in software       | headphones handle it  |
 
-So there are two modes, from the same code:
-
-| | `single_mic` | `dual_mic` |
-|---|---|---|
-| **Hardware** | Any laptop | A headset each |
-| **Hands-free** | Yes | Yes |
-| **Talking at the same time** | Degrades to whoever is louder | Genuinely works |
-| **Who spoke?** | Detected from the audio | Known — one mic per person |
-| **Echo** | Managed in software | Doesn't exist (headphones) |
-
-Start with `single_mic` — it works on the machine you already have. A second USB headset
-(~$20) upgrades you to the real thing by changing one line of config.
-
----
+Start with single_mic since it works with what you already have. A $20 USB headset gets
+you the real version and it's one line of config to switch.
 
 ## Setup
 
-**Python 3.13 or 3.12.** Not 3.14 — several dependencies have no wheels for it yet.
+Use **Python 3.13 or 3.12**. Not 3.14, a bunch of the dependencies have no wheels for it
+yet and the install just explodes.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/duplex-interpreter.git
+git clone https://github.com/nerdyvinny/duplex-interpreter.git
 cd duplex-interpreter
-py -3.13 -m venv .venv          # Windows
+py -3.13 -m venv .venv
 .venv\Scripts\activate
-# macOS / Linux:  python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Then add an API key:
+On mac/linux the venv line is `python3.13 -m venv .venv && source .venv/bin/activate`.
+
+Then the api key:
 
 ```bash
-cp .env.example .env            # copy .env.example .env  on Windows
+cp .env.example .env
 ```
 
-Open `.env` and set `OPENAI_API_KEY`. One key covers speech recognition, translation and
-voice. Get one at <https://platform.openai.com/api-keys>.
+Open `.env` and put your key in `OPENAI_API_KEY`. One key does the speech recognition,
+the translating AND the voice, which is why it's the default.
+Get one at https://platform.openai.com/api-keys
 
-Then configure and run:
+Then:
 
 ```bash
-python run.py --devices         # see your microphones and speakers
-python run.py --setup           # pick languages and devices, writes config.yaml
-python run.py --selftest samples/hello_en.wav    # prove it works without a mic
-python run.py                   # talk
+python run.py --devices                          # what mics do I have
+python run.py --setup                            # asks you questions, writes config.yaml
+python run.py --selftest samples/hello_en.wav    # check it works, no mic needed
+python run.py                                    # go
 ```
 
-Press Ctrl-C to stop. You'll get a summary with median latency.
+Ctrl-C stops it and prints your latency numbers.
 
----
+## Cost
 
-## What it costs
+About 2 to 4 cents a minute with the default openai setup, so a half hour conversation is
+around a dollar. The speech recognition and the voice are what cost money, the actual
+translating is basically free.
 
-The default OpenAI path runs about **$0.02–0.04 per minute** of conversation — roughly a
-dollar for a half-hour chat. Speech recognition and voice synthesis dominate; the
-translation itself is nearly free.
+You can also run it for $0, see the offline section below.
 
-To run for nothing at all, see [Running fully offline](#running-fully-offline).
+## Commands
 
----
+| command                                     | what it does                                         |
+| ------------------------------------------- | ---------------------------------------------------- |
+| `python run.py`                             | run it, with a live two column transcript            |
+| `python run.py --setup`                     | the wizard, writes config.yaml                       |
+| `python run.py --devices`                   | list your mics and speakers with their numbers       |
+| `python run.py --selftest FILE.wav`         | push one wav through the whole thing, no mic needed  |
+| `python run.py --selftest FILE.wav --realtime` | same but at normal speed, for honest timings      |
+| `python run.py --loopback`                  | mic straight to speaker, checks you picked the right devices |
+| `python run.py --no-live`                   | boring line by line output                           |
+| `python run.py -v` / `-vv`                  | more logging                                         |
 
-## The commands
+`--selftest` is the one to use when something is broken. It takes the microphone, the
+room and the other person out of the picture, so whatever still fails is actually broken.
 
-| Command | What it does |
-|---|---|
-| `python run.py` | Run the conversation with a live two-column transcript |
-| `python run.py --setup` | Interactive wizard; writes `config.yaml` |
-| `python run.py --devices` | List audio devices with their indices |
-| `python run.py --selftest FILE.wav` | Run one WAV through the whole pipeline. No microphone needed. Prints per-stage timings and writes the translated audio to `selftest_out_A.wav` |
-| `python run.py --selftest FILE.wav --realtime` | Same, but feeds the audio at wall-clock speed. Slower, and the only way to get latency numbers that match live use — without it every utterance in the file arrives at once and they contend |
-| `python run.py --loopback` | Pipe the mic straight to the speaker to confirm the right devices are selected |
-| `python run.py --no-live` | Plain line-by-line output instead of the live view |
-| `python run.py -v` / `-vv` | Progressively more logging |
+Heads up on `--realtime`: without it the selftest dumps the whole file in at once, so every
+sentence gets transcribed simultaneously and the timings look way worse than real life.
 
-`--selftest` is the one to reach for when something isn't working. It removes the
-microphone, the room and the other person from the equation, so whatever breaks is
-genuinely broken.
+## config.yaml
 
----
+`--setup` writes this for you, or copy `config.example.yaml`.
 
-## Configuration
-
-`config.yaml`, generated by `--setup` or copied from `config.example.yaml`.
-
-### Languages
+Languages:
 
 ```yaml
 languages:
@@ -121,25 +109,25 @@ languages:
   b: { code: es, name: Spanish, voice: nova }
 ```
 
-Around 30 languages are supported out of the box — see `interpreter/languages.py`, and
-add any code Whisper knows. Give the two sides different voices; on a shared speaker
-that's the only way to tell the directions apart by ear.
+There are about 30 languages in `interpreter/languages.py` and you can add any code
+whisper knows. Give the two sides different voices, on one speaker that's the only way
+to tell which direction you're hearing.
 
-### Devices
+Devices:
 
 ```yaml
 channels:
   - id: A
-    input_device: "FHD Camera" # index, exact name, or any substring
-    output_device: null # null = system default
+    input_device: "FHD Camera" # a number, the full name, or any part of it
+    output_device: null # null means system default
     language: auto
 ```
 
-Names are matched case-insensitively as substrings, so `"FHD Camera"` finds
-`Microphone (FHD Camera Microphone)`. When a name matches several host APIs, WASAPI wins
-on Windows. Run `--devices` to see the list.
+Names match on any part, case doesn't matter, so `"FHD Camera"` finds
+`Microphone (FHD Camera Microphone)`. Useful because the device numbers change when you
+unplug things. Run `--devices` to see what you've got.
 
-### Two headsets
+Two headsets:
 
 ```yaml
 mode: dual_mic
@@ -148,53 +136,49 @@ channels:
   - { id: B, input_device: "Headset Two", output_device: "Headset Two", language: es }
 ```
 
-Each person's translations play in the *other* person's earpiece. Nobody hears a
-translation of their own words. Languages are pinned, so nothing is guessed and
-recognition is both faster and more accurate.
+Your translation plays in the OTHER person's ear. Nobody hears their own words come back
+at them. The languages are pinned so nothing gets guessed, which also makes the
+recognition faster and more accurate.
 
----
+## Making it faster
 
-## Tuning latency
+Expect about 1.2 to 1.7 seconds from when somebody stops talking to when the translation
+starts:
 
-Expect **1.2–1.7 seconds** from the moment someone stops talking to the moment the
-translation starts playing:
+| stage                     | roughly    |
+| ------------------------- | ---------- |
+| noticing you stopped talking | **600ms** |
+| speech recognition        | 300-500ms  |
+| translating               | 150-350ms  |
+| first audio out           | 150-300ms  |
 
-| Stage | Typical |
-|---|---|
-| Detecting end-of-speech | **600 ms** |
-| Speech recognition | 300–500 ms |
-| Translation | 150–350 ms |
-| First audio from the voice | 150–300 ms |
-
-**The end-of-speech timeout dominates, and it's the one knob worth turning:**
+That first row is the big one and it's the only knob really worth touching:
 
 ```yaml
 vad:
-  silence_ms_to_end: 350 # snappier; starts clipping people who pause mid-sentence
+  silence_ms_to_end: 350
 ```
 
-600 ms is safe. 350 ms feels noticeably quicker and is fine for people who speak in
-complete phrases. Below about 250 ms you'll start translating half-sentences.
+600 is safe. 350 feels a lot snappier and is fine if you speak in whole phrases. Under
+250 it starts translating half sentences, which is worse than waiting.
 
-The other worthwhile change is ElevenLabs Flash for voice (~75 ms model latency), which
-takes the total to roughly 0.8–1.1 s:
+The other easy win is elevenlabs flash for the voice, which gets the whole thing down to
+about 0.8-1.1s:
 
 ```bash
-pip install elevenlabs      # then set ELEVENLABS_API_KEY in .env
+pip install elevenlabs      # then put ELEVENLABS_API_KEY in .env
 ```
 
 ```yaml
 providers:
   tts: elevenlabs
 languages:
-  a: { code: en, voice: 21m00Tcm4TlvDq8ikWAM } # ElevenLabs voice IDs
+  a: { code: en, voice: 21m00Tcm4TlvDq8ikWAM } # elevenlabs uses id strings not names
 ```
 
----
+## Mixing and matching
 
-## Swapping providers
-
-Every stage is independent. Mix them freely.
+All three stages are independent, you can combine them however you want.
 
 ```yaml
 providers:
@@ -203,26 +187,23 @@ providers:
   tts: openai # openai | elevenlabs | piper | silent
 ```
 
-**DeepL** is noticeably better than a general model for European language pairs, and the
-free tier (500k characters/month) is far more than a conversation will ever use:
+**deepl** is noticeably better than a general model between european languages, and the
+free tier is 500k characters a month which you will never get close to using:
 
 ```bash
-pip install deepl           # then set DEEPL_API_KEY in .env
+pip install deepl           # then DEEPL_API_KEY in .env
 ```
 
-**Local speech recognition with cloud translation and voice** is a good middle ground:
-your audio never leaves the machine, but you keep good translation quality and low
-latency.
+Local speech recognition with cloud translation and voice is a nice middle ground. Your
+actual audio never leaves your computer but you keep the good translations:
 
 ```yaml
 providers: { stt: faster-whisper, translation: openai, tts: openai }
 ```
 
----
+## Fully offline
 
-## Running fully offline
-
-No API keys, no network after the first download, nothing leaving the machine.
+No api keys, no internet after the first download, nothing leaves your machine.
 
 ```bash
 pip install -r requirements-local.txt
@@ -237,8 +218,9 @@ providers:
   local_whisper_device: auto # auto | cuda | cpu
 ```
 
-Piper needs a voice per language, and **each voice is two files** — the `.onnx` and its
-`.onnx.json` config, which must sit next to it. Name them after the language code:
+Piper needs one voice per language. **Each voice is TWO files**, the `.onnx` and a
+`.onnx.json` that has to sit right next to it. I only downloaded the first one and spent
+ages wondering why it wouldn't load. Name them after the language code:
 
 ```bash
 mkdir -p models/piper
@@ -249,126 +231,115 @@ curl -L -o models/piper/es.onnx      $BASE/es/es_ES/davefx/medium/es_ES-davefx-m
 curl -L -o models/piper/es.onnx.json $BASE/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json
 ```
 
-Browse the full voice list at <https://huggingface.co/rhasspy/piper-voices>. To keep a
-voice elsewhere, point at it with `PIPER_VOICE_ES=/path/to/voice.onnx` (its `.json` still
-has to be alongside it).
+All the voices are at https://huggingface.co/rhasspy/piper-voices. If you want to keep
+them somewhere else use `PIPER_VOICE_ES=/path/to/voice.onnx` (the .json still has to be
+next to it).
 
-The first run also downloads the Whisper model and an Argos model per direction
-(~100 MB each). That happens at startup, before the conversation begins — not
-mid-sentence.
+First run also grabs the whisper model and an argos model for each direction, about 100MB
+each. That all happens at startup before anybody talks, not halfway through a sentence.
 
-Measured on an RTX 5060 + i7-14700F with `small`, paced at wall-clock speed
-(`--selftest --realtime`), after the startup warm-up:
+Numbers off my machine (RTX 5060 + i7-14700F, `small`, run with `--selftest --realtime`
+after everything warmed up):
 
-| Stage | GPU (fp16) | CPU (int8) |
-|---|---|---|
-| Speech recognition | 180–380 ms | ~1.75 s |
-| Translation (Argos) | 20–40 ms | same |
-| Voice (Piper) | 90–210 ms | same |
-| **Pipeline total** | **320–630 ms** | ~1.9 s |
+| stage              | GPU (fp16)  | CPU (int8) |
+| ------------------ | ----------- | ---------- |
+| speech recognition | 180-380ms   | ~1.75s     |
+| translate (argos)  | 20-40ms     | same       |
+| voice (piper)      | 90-210ms    | same       |
+| **total**          | **320-630ms** | ~1.9s    |
 
-Add `vad.silence_ms_to_end` on top for the full end-to-end figure — so roughly **0.8–1.1 s**
-on a GPU, which beats the cloud path. Every model is loaded and warmed at startup, so
-there is no penalty on the first thing anyone says.
+Add your `silence_ms_to_end` on top for the real end to end number, so about 0.8-1.1s on
+a gpu, which actually beats the cloud version.
 
-Translation quality is the real trade-off, not speed: Argos handles everyday sentences
-fine and struggles with idiom. It rendered "Muy bien, gracias" as "That's good, thank
-you" where a larger model gives "Very well, thanks."
+The real tradeoff is translation quality, not speed. Argos is fine for normal sentences
+and gets confused by idioms. It turned "Muy bien, gracias" into "That's good, thank you"
+where the bigger models say "Very well, thanks."
 
-**On a GPU (Windows):** install the CUDA runtime libraries as pip packages —
+**If you have an nvidia gpu on windows**, you need these:
 
 ```bash
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 
-Without them CTranslate2 fails with `Library cublas64_12.dll is not found` even though
-the GPU and driver are fine. The app puts their DLLs on the search path itself, so no
-`PATH` fiddling is needed. If CUDA is unusable for any reason it warns once and falls
-back to CPU `int8` automatically.
+Without them you get `Library cublas64_12.dll is not found` even though your gpu is
+completely fine. The app puts the dlls on the search path itself so you don't have to
+mess with PATH. If cuda doesn't work for any reason it warns you once and drops to cpu.
 
----
+## How it stops translating itself
 
-## How it avoids translating itself
+This was the first big problem I hit. With one mic and a speaker in the same room, the
+spanish coming out of the speaker goes straight back into the mic, gets translated to
+english, played, picked up again... it never stops and it gets more wrong every loop. My
+first version went completely insane after one sentence.
 
-With one microphone and a speaker in the same room, the translation coming out of the
-speaker goes straight back into the microphone. Left alone, the app translates its own
-output forever, drifting further from what anyone said with each loop.
+Three things fix it, and none of them need a real echo canceller:
 
-Three layers handle it, no acoustic echo canceller required:
+1. **the gate** - while our speaker is talking, throw the mic audio away, plus 150ms
+   afterwards for the room echo
+2. **barge in** - if somebody is loud for long enough while the gate is shut, they're
+   trying to interrupt, so stop the playback and open the gate. without this the gate
+   makes the app impossible to interrupt, which is really annoying
+3. **the text check** - if what we transcribe looks like something we just said, drop it.
+   this catches whatever gets past the gate
 
-1. **Output gate** — while the speaker is playing, microphone input is discarded, plus
-   150 ms afterwards for the room's reverb tail.
-2. **Barge-in** — sustained loud input while gated means a human is talking over the
-   translation, so playback stops and the gate reopens. Without this, the gate would make
-   the app impossible to interrupt.
-3. **Self-echo guard** — a transcript that closely matches something we just said gets
-   dropped. This catches whatever leaks past the gate.
+All three turn themselves off in dual_mic mode because headphones already solve it.
 
-All three switch off in `dual_mic` mode, where headphones solve it physically.
+**Headphones are still way better than any of this.** The software version means you
+can't be heard while the app is talking.
 
-**Headphones are still much better than any of this.** The software version costs you the
-ability to be heard while the app is speaking.
+## How it guesses who spoke
 
----
+Only matters in single_mic mode, dual_mic already knows.
 
-## How it decides who spoke
+Three things, most to least trustworthy:
 
-Only relevant in `single_mic` mode; `dual_mic` knows, because each microphone belongs to
-one person.
+1. **the text.** picking between two languages you already know is way easier than
+   guessing from scratch, and its instant and offline. different alphabets are decided
+   immediately, same alphabet ones use common words and accented letters
+2. **the audio**, when the recognizer bothers to tell you. only the local whisper gives
+   you a confidence number, the openai one doesn't tell you at all
+3. **taking turns.** in a two person conversation the next person to talk is usually the
+   other one. weak, but its what you'd do yourself if you didn't catch who spoke
 
-Three signals, in order of trustworthiness:
+If the text and the audio disagree I go with the text. Short sentences are exactly where
+the audio guessing is worst.
 
-1. **The transcript.** Choosing between two *known* languages from text is much easier
-   than open-set detection, and it's instant and offline. Different alphabets are decided
-   on sight; same-alphabet pairs use function-word and accent-character scoring.
-2. **The audio**, when the recognizer reports a language. Only local Whisper gives a
-   usable confidence; the OpenAI transcription models don't expose one.
-3. **Alternation.** In a two-person conversation the next speaker is usually the other
-   person. Weak, but it's what a human does when they can't quite tell who spoke.
+**This is the honest weak spot of one mic mode.** Single words that exist in both
+languages ("no", "ok", "si") will sometimes go the wrong way. Two headsets makes the
+problem not exist instead of just making it smaller.
 
-When the transcript and the audio disagree, the transcript wins — short utterances are
-exactly where audio-based detection is worst.
-
-**This is the honest limitation of one-mic mode.** Single words that exist in both
-languages (*"no"*, *"ok"*, *"si"*) will sometimes route the wrong way. `dual_mic`
-eliminates the problem rather than mitigating it.
-
----
-
-## Project layout
+## What's where
 
 ```
-run.py                      entry point
-config.example.yaml         annotated config template
+run.py                      start here
+config.example.yaml         config template with comments
 interpreter/
-  config.py                 dataclasses, YAML loading, validation
-  languages.py              language table and default voices
-  langid.py                 text-based language identification
-  routing.py                which direction does this utterance go
-  duplex.py                 echo gate, barge-in, self-echo guard
-  pipeline.py               one utterance, end to end, ordered
-  orchestrator.py           builds and cross-wires the channels
+  config.py                 reads and checks config.yaml
+  languages.py              the language list
+  langid.py                 guessing the language from text
+  routing.py                which way does this sentence go
+  duplex.py                 the echo stuff
+  pipeline.py               one sentence, start to finish, in order
+  orchestrator.py           builds everything and wires it together
   registry.py               provider name -> class
-  events.py                 event bus between pipeline and display
+  events.py                 event bus between the pipeline and the screen
   audio/
-    devices.py              enumerate and resolve devices
-    capture.py              microphone -> async frame queue
-    vad.py                  Silero / WebRTC backends + utterance segmenter
-    playback.py             ring buffer + barge-in stop
-    resample.py             rate conversion
+    devices.py              finding mics and speakers
+    capture.py              microphone -> frame queue
+    vad.py                  silero/webrtc + the sentence splitter
+    playback.py             speaker ring buffer
+    resample.py             sample rate conversion
   providers/
     base.py                 the three interfaces
-    openai_provider.py      STT + translation + TTS
-    cloud_extras.py         DeepL, ElevenLabs
-    local_provider.py       faster-whisper, Argos, Piper
-    fake.py                 deterministic fakes for the tests
+    openai_provider.py      openai for all three
+    cloud_extras.py         deepl and elevenlabs
+    local_provider.py       faster-whisper, argos, piper
+    fake.py                 fakes for the tests
   ui/
-    cli.py                  argument parsing, wizard, self-test
-    display.py              live transcript
-tests/                      137 tests, no network or audio hardware needed
+    cli.py                  arguments, the wizard, selftest
+    display.py              the live transcript
+tests/                      154 tests, no internet or sound card needed
 ```
-
----
 
 ## Tests
 
@@ -377,57 +348,50 @@ pip install pytest pytest-asyncio
 pytest
 ```
 
-Everything runs offline with fake providers and synthetic audio: VAD segmentation,
-routing and language identification, playback ordering under out-of-order completion, the
-echo guard, config validation, device resolution, and resampling. Two tests exercise the
-real Silero model against `samples/hello_en.wav` and skip if it can't be downloaded.
+Everything runs offline with fake providers and made up audio: the sentence splitting,
+the routing and language guessing, playback ordering when things finish out of order, the
+echo guard, config checking, device lookup, resampling. Two of them use the real silero
+model on `samples/hello_en.wav` and skip themselves if it can't download.
 
----
+## When it doesn't work
 
-## Troubleshooting
+**nothing happens when I talk.** run `python run.py --loopback` first. if you can't hear
+yourself you picked the wrong input device. if you can, try `vad.threshold: 0.3` to make
+it more eager, and `input_gain: 2.0` on the channel if your mic is quiet.
 
-**Nothing happens when I talk.** Run `python run.py --loopback` — if you can't hear
-yourself, the wrong input device is selected. Then check the level: `vad.threshold: 0.3`
-makes detection more eager, and `input_gain: 2.0` on the channel helps a quiet mic.
+**it cuts me off.** raise `vad.silence_ms_to_end` to 800 or 1000.
 
-**It cuts me off mid-sentence.** Raise `vad.silence_ms_to_end` to 800 or 1000.
+**it takes forever to answer.** lower `vad.silence_ms_to_end` to 350.
 
-**It waits too long before translating.** Lower `vad.silence_ms_to_end` to 350.
+**it's translating its own voice.** use headphones. if you can't, check
+`duplex.shared_audio: true` is set and turn your speakers down.
 
-**It translates its own voice.** Use headphones. If you can't, confirm
-`duplex.shared_audio: true` and turn the speaker volume down.
+**it translates the wrong way.** single words are the hard case, see the section above.
+two headsets fixes it properly.
 
-**It translates in the wrong direction.** Single-word utterances are the hard case — see
-[how it decides who spoke](#how-it-decides-who-spoke). Two headsets fix it properly.
+**`PortAudio could not be loaded`.** linux: `sudo apt install libportaudio2`.
+everywhere else: `pip install --force-reinstall sounddevice`.
 
-**`PortAudio could not be loaded`.** On Linux: `sudo apt install libportaudio2`.
-Elsewhere: `pip install --force-reinstall sounddevice`.
+**silero won't download.** set `vad.backend: webrtc`, no download needed. it false
+triggers a bit more in a noisy room.
 
-**Silero VAD won't download.** Set `vad.backend: webrtc` — no download, slightly more
-false triggers in a noisy room.
+**`Library cublas64_12.dll is not found`** but your gpu is fine. run
+`pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`. since python 3.8 windows stopped
+searching PATH for a module's dependencies, so the app registers those folders itself
+once the packages exist.
 
-**`Library cublas64_12.dll is not found`** with a working GPU. Run
-`pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`. Since Python 3.8, Windows no longer
-searches `PATH` for an extension module's dependencies, so the app registers those
-directories itself once the packages are present.
+**the local timings are way worse than what I wrote above.** you forgot `--realtime`.
 
-**Local latencies look far worse than the README claims.** Check you used `--realtime`.
-Without it `--selftest` feeds the whole file instantly, so every utterance is transcribed
-simultaneously and the timings reflect contention that never happens in a real
-conversation.
+**pip is trying to build wheels and failing.** you're on python 3.14. use 3.13.
 
-**Wheels fail to build on install.** You're probably on Python 3.14. Use 3.13.
+## Things it doesn't do
 
----
-
-## Limitations
-
-- Overlapping speech through one microphone is not solvable in software. Two mics.
-- Language identification on single words is unreliable. `dual_mic` avoids it entirely.
-- Translation happens at sentence boundaries, not word by word — deliberately, since
-  word order differs across languages. This is consecutive interpretation, not the
-  simultaneous kind a human interpreter at the UN does.
-- Two people, two languages. Not three.
+- two people talking over each other on ONE microphone. not solvable in software, use two mics
+- single words are unreliable in single_mic mode, dual_mic avoids it completely
+- it translates whole sentences, not word by word. thats on purpose, word order is
+  different between languages so you have to wait for the end. real UN interpreters do
+  the word by word kind, this is not that
+- two people, two languages. not three.
 
 ## License
 

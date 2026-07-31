@@ -1,13 +1,14 @@
-# duplex-interpreter configuration
-# Copy to config.yaml (or run `python run.py --setup` to generate one).
-# Device names are matched case-insensitively as substrings, so
-# "FHD Camera" matches "Microphone (FHD Camera Microphone)".
-# Run `python run.py --devices` to see what's available.
+# copy this to config.yaml, or just run `python run.py --setup` and it will
+# write one for you.
+#
+# device names match on any part of the name and case doesn't matter, so
+# "FHD Camera" finds "Microphone (FHD Camera Microphone)".
+# run `python run.py --devices` to see what you have.
 
-# single_mic: one shared microphone. Hands-free, language detected per
-#             utterance. Works with the hardware you already have.
-# dual_mic:   one microphone + one earpiece per person. True full duplex —
-#             both people can talk at once and neither pipeline blocks.
+# single_mic = one shared mic, it works out which language was spoken.
+#              works with whatever laptop you already have.
+# dual_mic   = a mic and an earpiece each. this is the one where you can
+#              both actually talk at the same time.
 mode: single_mic
 
 languages:
@@ -18,17 +19,17 @@ languages:
   b:
     code: es
     name: Spanish
-    voice: nova
+    voice: nova # give them different voices or you cant tell them apart
 
 channels:
-  # single_mic: exactly one channel, language must be 'auto'.
+  # single_mic needs exactly one channel and language HAS to be auto
   - id: A
-    input_device: null # null = system default; or "FHD Camera", or an index
+    input_device: null # null = system default. or "FHD Camera", or a number
     output_device: null
     language: auto
-    input_gain: 1.0
+    input_gain: 1.0 # turn this up if your mic is quiet
 
-  # dual_mic: two channels, each pinning a language. Example:
+  # for dual_mic use two channels and pin a language on each one:
   # - id: A
   #   input_device: "Headset A"
   #   output_device: "Headset A"
@@ -45,24 +46,24 @@ providers:
   stt_model: gpt-4o-mini-transcribe
   translation_model: gpt-4o-mini
   tts_model: gpt-4o-mini-tts
-  # Local-only knobs (ignored by the cloud providers):
+  # these only do anything for the local providers:
   # local_whisper_size: small
   # local_whisper_device: auto     # auto | cuda | cpu
   # local_whisper_compute: auto    # auto | float16 | int8
 
 vad:
-  backend: silero # silero (accurate, 2.2 MB download) | webrtc (zero download)
-  # THE latency lever. 600 is safe; 350 feels much snappier but starts
-  # cutting off people who pause mid-sentence. See README "Tuning latency".
+  backend: silero # silero is better in noise (2.2mb download), webrtc needs no download
+  # this is THE setting that decides how fast it feels. 600 is safe, 350 is
+  # much snappier but starts cutting off people who pause to think
   silence_ms_to_end: 600
-  preroll_ms: 300 # audio kept from before the trigger, so onsets aren't clipped
+  preroll_ms: 300 # audio kept from before it triggered so the first word survives
   min_utterance_ms: 250 # ignore coughs and clicks
-  max_utterance_ms: 15000 # force-flush long monologues
+  max_utterance_ms: 15000 # split up people who never stop talking
   threshold: 0.5
 
 duplex:
-  # Echo control for when the mic can hear the speaker. Ignored in dual_mic.
+  # only matters when the mic can hear the speaker. ignored in dual_mic
   shared_audio: true
-  bargein: true # talk over the translation to interrupt it
+  bargein: true # talk over the translation to cut it off
 
 log_level: WARNING

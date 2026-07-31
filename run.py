@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""duplex-interpreter entry point.
-
-    python run.py --devices                     list audio devices
-    python run.py --setup                       interactive setup wizard
-    python run.py --selftest samples/x.wav      full pipeline, no microphone
-    python run.py --loopback                    check device wiring
-    python run.py                               run the conversation
-"""
-
-from __future__ import annotations
+# start the app from here
+#
+# python run.py --devices                  see what mics/speakers you have
+# python run.py --setup                    makes the config file for you
+# python run.py --selftest samples/x.wav   test it without a microphone
+# python run.py --loopback                 hear yourself, checks the wiring
+# python run.py                            actually run it
 
 import sys
 

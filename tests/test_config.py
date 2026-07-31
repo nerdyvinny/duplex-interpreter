@@ -1,9 +1,7 @@
-"""Config parsing, validation and device resolution.
-
-Every error here should read like advice to the person editing config.yaml.
-"""
-
-from __future__ import annotations
+# tests for reading config.yaml and checking it
+#
+# I care that the error MESSAGES are good here, not just that it raises,
+# because past me kept writing broken config files
 
 import numpy as np
 import pytest
@@ -49,7 +47,7 @@ def test_languages_can_be_bare_codes():
 
 
 def test_the_two_slots_get_different_default_voices():
-    """Both sides sounding identical is confusing on a shared speaker."""
+    # if both people get the same voice you cant tell who is talking
     cfg = config_module.from_dict({"languages": {"a": "en", "b": "nl"}})
 
     assert cfg.language_a.voice != cfg.language_b.voice
@@ -80,9 +78,7 @@ def test_other_language_flips_the_direction():
     assert cfg.other_language("es") == "en"
 
 
-# --------------------------------------------------------------------------
-# validation
-# --------------------------------------------------------------------------
+# ---- validation ----
 
 
 def test_the_same_language_twice_is_rejected():
@@ -121,7 +117,7 @@ def test_dual_mic_requires_pinned_languages():
 
 
 def test_dual_mic_rejects_a_shared_microphone():
-    """The whole point of dual_mic is one microphone per person."""
+    # the entire point of dual_mic is one mic each
     with pytest.raises(ConfigError, match="own microphone"):
         config_module.from_dict(
             {
@@ -182,13 +178,11 @@ def test_missing_language_slots_are_reported():
         config_module.from_dict({"languages": {"a": "en"}})
 
 
-# --------------------------------------------------------------------------
-# files
-# --------------------------------------------------------------------------
+# ---- files ----
 
 
 def test_the_shipped_example_config_is_valid():
-    """A broken example is the first thing every new user would hit."""
+    # if the example config is broken thats the first thing anybody hits
     cfg = config_module.load("config.example.yaml")
 
     assert cfg.mode is Mode.SINGLE_MIC
@@ -227,9 +221,7 @@ def test_a_non_mapping_config_is_reported(tmp_path):
         config_module.load(path)
 
 
-# --------------------------------------------------------------------------
-# device resolution
-# --------------------------------------------------------------------------
+# ---- device resolution ----
 
 
 FAKE_DEVICES = [
@@ -264,7 +256,7 @@ def test_a_substring_resolves_and_is_case_insensitive(fake_devices):
 
 
 def test_an_ambiguous_name_prefers_wasapi(fake_devices):
-    """Two host APIs expose the same physical mic; WASAPI is the better one."""
+    # the same mic shows up twice under different apis, want the WASAPI one
     assert audio_devices.resolve("FHD Camera", kind="input") == 2
 
 
@@ -287,9 +279,7 @@ def test_shared_device_detection(fake_devices):
     assert audio_devices.same_physical_device(None, None) is True
 
 
-# --------------------------------------------------------------------------
-# provider registry
-# --------------------------------------------------------------------------
+# ---- provider registry ----
 
 
 def test_unknown_providers_list_the_valid_choices():
@@ -326,11 +316,10 @@ def test_a_missing_api_key_is_reported_as_config_advice(monkeypatch):
 
 
 def test_an_unedited_placeholder_key_is_caught(monkeypatch):
-    """Setup says "copy .env.example to .env", so this is the likeliest slip.
-
-    A placeholder is truthy, so without an explicit check it sails past the
-    emptiness test and surfaces much later as an opaque 401.
-    """
+    # the setup literally tells you to copy .env.example to .env so
+    # forgetting to edit it is the most likely mistake there is. "sk-..."
+    # is a non empty string so it gets right past the empty check and then
+    # you get a confusing 401 ages later
     from interpreter.config import require_env
 
     for placeholder in ("sk-...", "your-key-here", "changeme"):
@@ -347,7 +336,7 @@ def test_a_real_looking_key_is_accepted(monkeypatch):
 
 
 def test_preflight_catches_a_missing_key_before_devices_open(monkeypatch):
-    """One clear failure at startup beats every utterance failing later."""
+    # one clear error at the start beats every sentence failing later
     from interpreter.config import ProvidersConfig
     from interpreter.orchestrator import Orchestrator
     from interpreter.providers import openai_provider
