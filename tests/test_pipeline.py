@@ -15,8 +15,67 @@ from interpreter.audio.playback import RecordingSpeaker
 from interpreter.audio.vad import EnergyVad
 from interpreter.events import EventBus, Stage
 from interpreter.orchestrator import Orchestrator
+from interpreter.pipeline import PlaybackOrder
 from interpreter.providers.base import Transcript
 from interpreter.providers.fake import FakeSTT, FakeTranslation, FakeTTS
+
+
+# --------------------------------------------------------------------------
+# playback ordering
+# --------------------------------------------------------------------------
+
+
+async def test_playback_order_is_strict_even_when_a_later_turn_is_dropped():
+    """A drop releases its slot immediately, long before the turns ahead of it.
+
+    Every filtered utterance — self-echo, no speech recognized, a rejected
+    hallucination — releases as soon as it is filtered, which in a real
+    conversation is far sooner than the sentences queued in front of it finish
+    translating. Those early releases must not open the gate for anything but
+    the utterance whose turn it actually is.
+    """
+    import asyncio
+
+    order = PlaybackOrder()
+    played: list[int] = []
+
+    async def turn(seq: int, work: float, *, dropped: bool = False) -> None:
+        await asyncio.sleep(work)  # stt + translation
+        if dropped:
+            await order.release(seq)
+            return
+        await order.wait_turn(seq)
+        played.append(seq)
+        await asyncio.sleep(0.02)  # playback
+        await order.release(seq)
+
+    await asyncio.gather(
+        turn(1, 0.00),
+        turn(2, 0.01),
+        turn(3, 0.20),  # slow translation
+        turn(4, 0.12),  # ready well before 3
+        turn(5, 0.02, dropped=True),  # releases first of all
+    )
+
+    assert played == [1, 2, 3, 4]
+
+
+async def test_playback_order_survives_releases_arriving_backwards():
+    import asyncio
+
+    order = PlaybackOrder()
+    played: list[int] = []
+
+    async def turn(seq: int, work: float) -> None:
+        await asyncio.sleep(work)
+        await order.wait_turn(seq)
+        played.append(seq)
+        await order.release(seq)
+
+    # Strictly decreasing readiness: every turn is ready before the one ahead.
+    await asyncio.gather(*(turn(seq, (6 - seq) * 0.02) for seq in range(1, 6)))
+
+    assert played == [1, 2, 3, 4, 5]
 
 
 class Harness:

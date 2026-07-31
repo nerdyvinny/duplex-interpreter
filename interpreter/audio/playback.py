@@ -41,6 +41,9 @@ class SpeakerStream:
         self._device_rate = 24_000
         self._device_channels = 1
         self._underruns = 0
+        # Number of `play()` calls that have started feeding but not finished.
+        # Outside that window an empty buffer just means nobody is talking.
+        self._feeding = 0
         self._idle = threading.Event()
         self._idle.set()
 
@@ -117,7 +120,12 @@ class SpeakerStream:
             if not self._buffer:
                 self._idle.set()
 
-        if filled == 0 and status:
+        # An underrun is only meaningful while a `play()` is mid-stream: the
+        # device wanted audio, more was coming, and it had not arrived. An
+        # empty buffer the rest of the time is just an idle speaker — which is
+        # most callbacks in a conversation, and counting those reported
+        # thousands of underruns for a completely clean run.
+        if filled < needed and self._feeding:
             self._underruns += 1
         outdata[:] = chunk.tobytes()
 
@@ -147,17 +155,25 @@ class SpeakerStream:
         resampler = StreamResampler(source_rate, self._device_rate)
         first = True
 
-        async for raw in chunks:
-            if self._generation != generation:
-                return False  # barged in on
-            if not raw:
-                continue
-            pcm = np.frombuffer(raw, dtype=np.int16)
-            self._enqueue(resampler.process(pcm))
-            if first:
-                first = False
-                if on_first_audio is not None:
-                    on_first_audio()
+        try:
+            async for raw in chunks:
+                if self._generation != generation:
+                    return False  # barged in on
+                if not raw:
+                    continue
+                pcm = np.frombuffer(raw, dtype=np.int16)
+                self._enqueue(resampler.process(pcm))
+                if first:
+                    first = False
+                    # Only now is the device genuinely owed audio. Counting
+                    # from the top of `play()` would blame the wait for the
+                    # first chunk — network latency, not an underrun.
+                    self._feeding += 1
+                    if on_first_audio is not None:
+                        on_first_audio()
+        finally:
+            if not first:
+                self._feeding -= 1
 
         tail = resampler.process(np.zeros(0, dtype=np.int16), last=True)
         if tail.size:

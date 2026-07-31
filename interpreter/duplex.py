@@ -70,6 +70,7 @@ class DuplexGuard:
 
         self._speaking_until = 0.0
         self._speaking = False
+        self._barged_in = False
         self._loud_ms = 0.0
         self._spoken: deque[_SpokenLine] = deque(maxlen=12)
         self._bargein_callback = None
@@ -86,10 +87,20 @@ class DuplexGuard:
 
     def playback_started(self) -> None:
         self._speaking = True
+        self._barged_in = False
         self._loud_ms = 0.0
 
     def playback_finished(self) -> None:
         self._speaking = False
+        if self._barged_in:
+            # A barge-in already opened the gate, and the person who
+            # interrupted is mid-sentence right now. The hangover exists to
+            # swallow the room's reverb tail after *our* speech ends; applying
+            # it here would throw away the first `hangover_ms` of theirs — and
+            # with it the start of the very utterance they interrupted to say.
+            self._barged_in = False
+            self._speaking_until = 0.0
+            return
         self._speaking_until = time.monotonic() + self.cfg.hangover_ms / 1000.0
 
     def note_spoken(self, text: str) -> None:
@@ -134,6 +145,7 @@ class DuplexGuard:
         self._loud_ms = 0.0
         self._speaking = False
         self._speaking_until = 0.0
+        self._barged_in = True
         log.info("channel %s: barge-in, stopping playback", self.channel_id)
         if self._bargein_callback is not None:
             try:

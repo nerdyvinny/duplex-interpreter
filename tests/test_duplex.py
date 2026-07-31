@@ -79,6 +79,53 @@ def test_sustained_loud_speech_interrupts_playback():
     assert not g.gated  # reopened, so the interruption gets captured
 
 
+def test_the_hangover_is_skipped_after_a_barge_in():
+    """The interrupter is mid-sentence; the gate must not shut on them.
+
+    Playback still "finishes" after a barge-in — the pipeline stops the stream
+    and runs its teardown either way. Re-arming the hangover there would throw
+    away the opening of the very utterance the person interrupted to say.
+    """
+    g = guard(bargein=True, bargein_rms=0.05, bargein_ms=100, hangover_ms=200)
+    g.set_bargein_callback(lambda: None)
+    g.playback_started()
+
+    for frame in frames(tone(0.5, amplitude=0.5)):
+        g.observe(frame)
+    assert g.bargeins == 1
+
+    g.playback_finished()
+
+    assert not g.gated
+    assert all(not g.observe(f) for f in frames(tone(0.2, amplitude=0.5)))
+
+
+def test_the_hangover_still_applies_to_uninterrupted_playback():
+    """Only a barge-in skips it — the reverb tail is real the rest of the time."""
+    g = guard(bargein=True, bargein_rms=0.05, bargein_ms=100, hangover_ms=200)
+    g.playback_started()
+    g.playback_finished()
+
+    assert g.gated
+
+
+def test_a_barge_in_does_not_suppress_the_following_playback():
+    """The skip is one-shot, not a latch that disables the gate for good."""
+    g = guard(bargein=True, bargein_rms=0.05, bargein_ms=100, hangover_ms=200)
+    g.set_bargein_callback(lambda: None)
+
+    g.playback_started()
+    for frame in frames(tone(0.5, amplitude=0.5)):
+        g.observe(frame)
+    g.playback_finished()
+    assert not g.gated
+
+    g.playback_started()  # next translation
+    assert g.gated
+    g.playback_finished()
+    assert g.gated  # this one was not interrupted, so the tail is guarded again
+
+
 def test_a_brief_noise_does_not_interrupt():
     stopped = []
     g = guard(bargein=True, bargein_rms=0.05, bargein_ms=300)

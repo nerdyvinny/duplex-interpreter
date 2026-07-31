@@ -499,6 +499,9 @@ async def _cmd_selftest(cfg: AppConfig, wav_path: Path, *, realtime: bool = Fals
 # --------------------------------------------------------------------------
 
 
+_LOOPBACK_PREBUFFER_FRAMES = 3  # 60 ms — inaudible, but absorbs scheduling jitter
+
+
 async def _cmd_loopback(cfg: AppConfig, seconds: float) -> int:
     from ..audio.capture import MicrophoneStream
     from ..audio.playback import SpeakerStream
@@ -518,10 +521,30 @@ async def _cmd_loopback(cfg: AppConfig, seconds: float) -> int:
     )
 
     async def _pump() -> None:
-        async for frame in microphone.frames():
-            await speaker.play(
-                _one_chunk(frame.tobytes()), source_rate=PIPELINE_SAMPLE_RATE
-            )
+        # One `play()` for the whole run, not one per frame. `play()` ends by
+        # draining the ring buffer dry and waiting for the device to catch up,
+        # which costs more than the 20 ms of audio it was handed — per-frame it
+        # ran at a third of real time, so the capture queue grew until it hit
+        # its cap and started dropping. A single call also keeps a single
+        # resampler, whose filter state is what stops the frame boundaries
+        # turning into clicks.
+        async def _stream():
+            # Hold back a few frames before the first hand-off, so ordinary
+            # scheduling jitter doesn't starve the device and report itself as
+            # an underrun in the summary below.
+            prebuffer: list[bytes] = []
+            async for frame in microphone.frames():
+                if len(prebuffer) < _LOOPBACK_PREBUFFER_FRAMES:
+                    prebuffer.append(frame.tobytes())
+                    continue
+                if prebuffer:
+                    yield b"".join(prebuffer)
+                    prebuffer.clear()
+                yield frame.tobytes()
+            if prebuffer:  # stopped before the prebuffer even filled
+                yield b"".join(prebuffer)
+
+        await speaker.play(_stream(), source_rate=PIPELINE_SAMPLE_RATE)
 
     task = asyncio.create_task(_pump())
     try:
@@ -544,10 +567,6 @@ async def _cmd_loopback(cfg: AppConfig, seconds: float) -> int:
             "Try a different input.[/yellow]"
         )
     return 0
-
-
-async def _one_chunk(data: bytes):
-    yield data
 
 
 # --------------------------------------------------------------------------

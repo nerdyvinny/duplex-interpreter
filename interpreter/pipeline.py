@@ -33,19 +33,31 @@ log = logging.getLogger(__name__)
 
 
 class PlaybackOrder:
-    """Serializes playback by sequence number without blocking earlier stages."""
+    """Serializes playback by sequence number without blocking earlier stages.
+
+    Releases arrive out of order — a dropped or failed utterance releases as
+    soon as it is filtered, long before the slower sentences ahead of it have
+    finished translating. So the cursor may only step forward over a *run* of
+    already-released sequences; jumping it straight to the highest one seen
+    would open the gate for every pending utterance simultaneously and let
+    them play in whatever order translation happened to finish.
+    """
 
     def __init__(self) -> None:
         self._next = 1
+        self._released: set[int] = set()
         self._condition = asyncio.Condition()
 
     async def wait_turn(self, seq: int) -> None:
         async with self._condition:
-            await self._condition.wait_for(lambda: self._next >= seq)
+            await self._condition.wait_for(lambda: self._next == seq)
 
     async def release(self, seq: int) -> None:
         async with self._condition:
-            self._next = max(self._next, seq + 1)
+            self._released.add(seq)
+            while self._next in self._released:
+                self._released.discard(self._next)
+                self._next += 1
             self._condition.notify_all()
 
 
@@ -131,9 +143,13 @@ class ChannelPipeline:
         except asyncio.CancelledError:
             raise
         finally:
-            trailing = self.segmenter.flush()
-            if trailing is not None and not self._stopping:
-                self._spawn(trailing)
+            # Only flush when the result will actually be spawned: `flush()`
+            # consumes a sequence number, and a number nothing ever releases
+            # would stall every utterance queued behind it.
+            if not self._stopping:
+                trailing = self.segmenter.flush()
+                if trailing is not None:
+                    self._spawn(trailing)
 
     def _spawn(self, utterance: Utterance) -> None:
         self.bus.emit(
